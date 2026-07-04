@@ -1,0 +1,125 @@
+VERSION ""
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: GPS_NODE DASH
+
+BO_ 1712 GPS_Position: 8 GPS_NODE
+ SG_ lat_deg : 0|32@1- (1e-07,0) [-90|90] "deg" DASH
+ SG_ lon_deg : 32|32@1- (1e-07,0) [-180|180] "deg" DASH
+
+BO_ 1713 GPS_Velocity: 8 GPS_NODE
+ SG_ speed_mps : 0|16@1+ (0.01,0) [0|655.35] "m/s" DASH
+ SG_ course_deg : 16|16@1+ (0.01,0) [0|655.35] "deg" DASH
+ SG_ alt_m : 32|16@1- (0.1,0) [-3276.8|3276.7] "m" DASH
+ SG_ fix_type : 48|4@1+ (1,0) [0|15] "" DASH
+ SG_ num_sv : 52|4@1+ (1,0) [0|15] "" DASH
+ SG_ counter : 56|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1714 GPS_Attitude: 8 GPS_NODE
+ SG_ yaw_deg : 0|16@1+ (0.01,0) [0|655.35] "deg" DASH
+ SG_ pitch_deg : 16|16@1- (0.01,0) [-327.68|327.67] "deg" DASH
+ SG_ roll_deg : 32|16@1- (0.01,0) [-327.68|327.67] "deg" DASH
+ SG_ fusion_status : 48|8@1+ (1,0) [0|255] "" DASH
+ SG_ counter : 56|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1715 Lap_Status: 8 GPS_NODE
+ SG_ lap : 0|16@1+ (1,0) [0|65535] "" DASH
+ SG_ running_time_ms : 16|32@1+ (1,0) [0|4294967295] "ms" DASH
+ SG_ sector : 48|8@1+ (1,0) [0|255] "" DASH
+ SG_ flags : 56|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1716 Lap_Event: 8 GPS_NODE
+ SG_ type : 0|8@1+ (1,0) [0|255] "" DASH
+ SG_ lap : 8|16@1+ (1,0) [0|65535] "" DASH
+ SG_ time_ms : 24|32@1+ (1,0) [0|4294967295] "ms" DASH
+ SG_ counter : 56|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1717 GPS_Quality: 7 GPS_NODE
+ SG_ hacc_mm : 0|16@1+ (1,0) [0|65535] "mm" DASH
+ SG_ sacc_mm_s : 16|16@1+ (0.1,0) [0|6553.5] "mm/s" DASH
+ SG_ pdop : 32|16@1+ (0.01,0) [0|655.35] "" DASH
+ SG_ flags : 48|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1718 GPS_IMU_Accel: 7 GPS_NODE
+ SG_ ax_mg : 0|16@1- (1,0) [-32768|32767] "mg" DASH
+ SG_ ay_mg : 16|16@1- (1,0) [-32768|32767] "mg" DASH
+ SG_ az_mg : 32|16@1- (1,0) [-32768|32767] "mg" DASH
+ SG_ counter : 48|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1719 GPS_IMU_Gyro: 7 GPS_NODE
+ SG_ gx_dps : 0|16@1- (0.0625,0) [-2048|2047.94] "dps" DASH
+ SG_ gy_dps : 16|16@1- (0.0625,0) [-2048|2047.94] "dps" DASH
+ SG_ gz_dps : 32|16@1- (0.0625,0) [-2048|2047.94] "dps" DASH
+ SG_ counter : 48|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1720 GPS_Temp: 6 GPS_NODE
+ SG_ mcp9800_temp_c : 0|16@1- (0.01,0) [-327.68|327.67] "degC" DASH
+ SG_ imu_temp_c : 16|16@1- (0.01,0) [-327.68|327.67] "degC" DASH
+ SG_ mcu_temp_c : 32|16@1- (0.01,0) [-327.68|327.67] "degC" DASH
+
+BO_ 1721 GPS_Status: 7 GPS_NODE
+ SG_ uptime_s : 0|16@1+ (1,0) [0|65535] "s" DASH
+ SG_ fault_bits : 16|16@1+ (1,0) [0|65535] "" DASH
+ SG_ gps_retry_count : 32|8@1+ (1,0) [0|255] "" DASH
+ SG_ imu_retry_count : 40|8@1+ (1,0) [0|255] "" DASH
+ SG_ cpu_load_pct : 48|8@1+ (1,0) [0|100] "%" DASH
+
+BO_ 1722 GPS_Mag: 7 GPS_NODE
+ SG_ mx_ut : 0|16@1- (0.1,0) [-3276.8|3276.7] "uT" DASH
+ SG_ my_ut : 16|16@1- (0.1,0) [-3276.8|3276.7] "uT" DASH
+ SG_ mz_ut : 32|16@1- (0.1,0) [-3276.8|3276.7] "uT" DASH
+ SG_ cal_status : 48|8@1+ (1,0) [0|255] "" DASH
+
+BO_ 1727 GPS_Command: 3 DASH
+ SG_ cmd : 0|8@1+ (1,0) [0|255] "" GPS_NODE
+ SG_ arg0 : 8|8@1+ (1,0) [0|255] "" GPS_NODE
+ SG_ arg1 : 16|8@1+ (1,0) [0|255] "" GPS_NODE
+
+CM_ BO_ 1712 "20 Hz fused position from the KF (lat/lon).";
+CM_ BO_ 1713 "20 Hz fused speed/course/altitude and fix quality summary.";
+CM_ BO_ 1714 "50 Hz Mahony AHRS Euler output (yaw/pitch/roll).";
+CM_ BO_ 1715 "10 Hz lap timer status.";
+CM_ BO_ 1716 "Lap/sector/TM2 event, sent on occurrence (not periodic).";
+CM_ SG_ 1716 type "0=lap complete, 1=sector crossed, 2=TM2 time-mark; see CAN_LAP_EVENT_* in can_defs.h.";
+CM_ SG_ 1716 time_ms "Meaning depends on type: lap time, sector time, or GPS iTOW for a TM2 mark.";
+CM_ BO_ 1717 "5 Hz GNSS accuracy/DOP/RTK summary.";
+CM_ SG_ 1717 flags "bit0 gnssFixOK, bits1-2 carrSoln (0 none/1 float/2 fixed), bit3 diffSoln.";
+CM_ BO_ 1718 "100 Hz calibrated body-frame accelerometer, +-16 g FS.";
+CM_ BO_ 1719 "100 Hz calibrated body-frame gyroscope. 0.0625 dps/LSB, range +-2048 dps, covering the LSM6DSO32's +-2000 dps FS with margin.";
+CM_ BO_ 1720 "1 Hz temperature summary: MCP9800 board ambient, IMU die temp, MCU internal temp.";
+CM_ BO_ 1721 "1 Hz node health: uptime, fault bits, retry counters, CPU load.";
+CM_ BO_ 1722 "10 Hz raw magnetometer, diagnostic only (not fed into AHRS directly). Units are uT*10, not raw sensor LSB, so the frame is self-describing.";
+CM_ SG_ 1722 cal_status "0 uncalibrated, 1 calibrating, 2 calibrated.";
+CM_ BO_ 1727 "RX only: host/dash sends commands to the GPS node. byte0=cmd, byte1=arg0, byte2=arg1; see CAN_CMD_* in can_defs.h.";
+CM_ SG_ 1727 cmd "0x01 GATE_SET (arg0=slot), 0x02 GATE_CLEAR (arg0=slot,0xFF=all), 0x10 MAG_CAL_START, 0x11 MAG_CAL_STOP, 0x20 CONFIG_SAVE, 0x30 NMEA_CFG (arg0=rate Hz, arg1=enable).";

@@ -1,0 +1,7 @@
+build/
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+build-host/
