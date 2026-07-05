@@ -13,10 +13,10 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 | Flash | 126 KB usable (last 2 KB reserved for gate/mag-cal storage) |
 | SRAM | 32 KB total (16 KB for task stacks + queues, 16 KB for buffers) |
 | Floating-point | Cortex-M4F with FPU (single-precision, hardware accelerated) |
+| HSE | 25 Mhz Crystal Oscillator |
 | RTC | 32 kHz LSI (low-speed internal oscillator) for watchdog |
-| ADC | 12-bit SAR, 16 channels (temperature sensor input) |
 | Watchdog | Independent Watchdog (IWDG) with 5 s timeout |
-| **Package** | 144-pin LQFP |
+| **Package** | 48-pin LQFP |
 
 ### GNSS receiver
 
@@ -33,7 +33,6 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 | **Time accuracy** (PPS) | 20 ns RMS (disciplined 1 PPS output) |
 | Message rates | NAV-PVT @ 20 Hz, TIM-TM2 on EXTINT event |
 | Power | 150 mA typical @ 3.3 V |
-| Antenna | External SMA or internal ceramic (board-level selectable) |
 
 ### Inertial measurement unit
 
@@ -70,11 +69,10 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 
 | Spec | Value |
 |------|-------|
-| Transceiver | NXP TJA1051 (single-wire CAN, 1 Mbps) |
+| Transceiver | TI TCAN3404 |
 | Bus | FDCAN1 on STM32 (CAN-FD capable, running classic CAN mode) |
 | Bit rate | 1 Mbps (nominal), fallback 500 kbps if auto-negotiation needed |
 | Termination | 120 Ω resistor on both ends of the bus (external to this board) |
-| Connector | Molex Micro-Fit 3.0 (CAN-H/CAN-L) |
 
 ### Power
 
@@ -83,8 +81,6 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 | Supply voltage | +12 V nominal (10–16 V tolerance, car battery) |
 | Quiescent draw | ~200 mA (GNSS + IMU active) |
 | Peak draw | ~250 mA (SPI/CAN peaks) |
-| Regulators | LDO to 3.3 V (STM32, sensors, transceiver); LDO to 1.8 V (IMU logic) |
-| Decoupling | Ceramic caps on all supply rails (100 nF local, 10 µF bulk) |
 
 ### UART interfaces
 
@@ -106,19 +102,7 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 | **Status signals** | — | — |
 | Status LED | PA5 | GPIO output, indicates system state |
 | Fault LED | PC14 | GPIO output, indicates error condition |
-| **Power monitoring** | — | — |
-| 12V sense | ADC (internal) | Not currently wired; reserved for future monitoring |
 
-### Physical characteristics
-
-| Spec | Value |
-|------|-------|
-| Weight | ~45 g (board only, no connectors) |
-| Operating temp | 0–70 °C (STM32 rated to −40 to +85 °C) |
-| Storage temp | −20 to +80 °C |
-| Humidity | 10–90% non-condensing |
-| Shock | 50 g peak (racing application) |
-| Vibration | ±2 g @ 10–2000 Hz |
 
 ## Firmware specifications
 
@@ -240,23 +224,7 @@ Max records: ~85 per page before compaction needed
 Clear marker: kind=GATE_CLEAR_ALL wipes all gates
 ```
 
-### Electrical characteristics
 
-| Parameter | Min | Typical | Max | Units | Notes |
-|-----------|-----|---------|-----|-------|-------|
-| **Supply voltage** | 10 | 12 | 16 | V | Car battery voltage |
-| **Supply current** | — | 200 | 250 | mA | Quiescent + peaks |
-| **3.3V rail** | 3.0 | 3.3 | 3.6 | V | From LDO |
-| **CAN bus voltage** | 0 | — | 12 | V | CAN transceiver powered by 12V |
-| **GPIO output** | 0 | — | 3.3 | V | STM32 I/O standard |
-| **SPI clock** | — | 6 | — | MHz | LSM6DSO32 @ 104 Hz samples |
-| **UART baud** | — | 38400/115200 | — | bps | GPS: 38400; others: 115200 |
-
-### Mechanical drawing
-
-[See schematics PDF: `gps-mainboard.pdf`]
-
-Standard SUFST 65×85 mm form factor with M3 mounting holes at corners. Clearance for SMA antenna connector on top, RS232 connector on back.
 
 ## Firmware feature matrix
 
