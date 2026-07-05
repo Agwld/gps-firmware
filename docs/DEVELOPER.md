@@ -322,12 +322,14 @@ slots are broadcast with valid=0.
 ```
 .
 ├── README.md                  # Main product documentation
-├── QUICK_START.md            # 5-minute build guide
-├── DEVELOPER.md              # This file
-├── ARCHITECTURE.md           # Technical deep dive
-├── DATASHEET.md              # Hardware specs & CAN matrix
-├── DRIVER_GUIDE.md           # User guide (drivers)
-├── NOTES.md                  # Dev notes, decisions, future work
+├── docs/
+│   ├── QUICK_START.md        # 5-minute build guide
+│   ├── DEVELOPER.md          # This file
+│   ├── ARCHITECTURE.md       # Technical deep dive
+│   ├── DATASHEET.md          # Hardware specs & CAN matrix
+│   ├── DRIVER_GUIDE.md       # User guide (drivers)
+│   ├── NOTES.md              # Dev notes, decisions, future work
+│   └── DOCUMENTATION.md      # Navigation guide
 ├──
 ├── CMakeLists.txt            # Top-level build config
 ├── CMakePresets.json         # Build presets (Release, Debug, etc.)

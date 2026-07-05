@@ -141,7 +141,7 @@ On each crossing:
 
 ### Time-stamping
 
-All crossing times are expressed in **GPS time-of-week** (iTOW, 0–604799999 ms per week) via a PPS-disciplined mapping ([`timebase.c`](SUFST/Src/fusion/timebase.c)):
+All crossing times are expressed in **GPS time-of-week** (iTOW, 0–604799999 ms per week) via a PPS-disciplined mapping ([`timebase.c`](../SUFST/Src/fusion/timebase.c)):
 
 - TIM3_CH2 captures the rising edge of the 1 PPS signal from the ZED-F9P
 - A `tick ↔ iTOW` mapping is maintained: when PPS fires, we know the exact GPS time for that tick count
@@ -397,11 +397,11 @@ Flash memory:
 
 ### Host-side tests
 
-- **UBX parsing** ([`test_ubx.c`](tests/test_ubx.c)) — Checksum, frame sync, payload extraction
-- **CAN pack/unpack** ([`test_can_pack.c`](tests/test_can_pack.c)) — All message types encoded/decoded correctly
-- **Fusion** ([`test_kf6.c`](tests/test_kf6.c), [`test_ahrs.c`](tests/test_ahrs.c)) — Kalman filter and AHRS with synthetic data
-- **Lap timing** ([`test_laptimer.c`](tests/test_laptimer.c)) — Gate crossing detection, sector times, lap state machine
-- **Persistence** ([`test_flash_store.c`](tests/test_flash_store.c)) — Record write/read, CRC, restore, compaction
+- **UBX parsing** ([`test_ubx.c`](../tests/test_ubx.c)) — Checksum, frame sync, payload extraction
+- **CAN pack/unpack** ([`test_can_pack.c`](../tests/test_can_pack.c)) — All message types encoded/decoded correctly
+- **Fusion** ([`test_kf6.c`](../tests/test_kf6.c), [`test_ahrs.c`](../tests/test_ahrs.c)) — Kalman filter and AHRS with synthetic data
+- **Lap timing** ([`test_laptimer.c`](../tests/test_laptimer.c)) — Gate crossing detection, sector times, lap state machine
+- **Persistence** ([`test_flash_store.c`](../tests/test_flash_store.c)) — Record write/read, CRC, restore, compaction
 
 All tests are **deterministic** and pass/fail on assertions. No mocking framework; tests exercise real code paths.
 

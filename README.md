@@ -24,14 +24,14 @@ The SUFST STAG 12 GPS node is a **standalone sensor module** that transforms raw
 
 ## For drivers
 
-→ See [**DRIVER_GUIDE.md**](DRIVER_GUIDE.md) for how to set/clear gates and use the timing system.
+→ See [**DRIVER_GUIDE.md**](docs/DRIVER_GUIDE.md) for how to set/clear gates and use the timing system.
 
 ## For engineers
 
-- **[QUICK_START.md](QUICK_START.md)** — Get the firmware building in 5 minutes
-- **[DEVELOPER.md](DEVELOPER.md)** — Detailed development environment, build system, testing, debugging
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Technical deep dive: sensor fusion, lap timing, CAN protocol, persistence
-- **[DATASHEET.md](DATASHEET.md)** — Component specs, pinouts, electrical, CAN matrix, firmware metrics
+- **[QUICK_START.md](docs/QUICK_START.md)** — Get the firmware building in 5 minutes
+- **[DEVELOPER.md](docs/DEVELOPER.md)** — Detailed development environment, build system, testing, debugging
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Technical deep dive: sensor fusion, lap timing, CAN protocol, persistence
+- **[DATASHEET.md](docs/DATASHEET.md)** — Component specs, pinouts, electrical, CAN matrix, firmware metrics
 
 ## Hardware
 
@@ -41,7 +41,7 @@ The GPS mainboard (`pcb/gps-mainboard`) is a 2-layer, 65 mm × 85 mm board that:
 - Runs 104 Hz IMU samples through a real-time fusion pipeline
 - Persists gate configuration in the STM32's internal flash
 
-See [**DATASHEET.md**](DATASHEET.md) for schematics, layout, pinouts, and electrical specs.
+See [**DATASHEET.md**](docs/DATASHEET.md) for schematics, layout, pinouts, and electrical specs.
 
 ## Status
 
@@ -87,10 +87,10 @@ gps-dashboard
 
 ## Contributing
 
-Contributions follow SUFST style: read [DEVELOPER.md](DEVELOPER.md) for naming, testing, and commit conventions before opening a PR.
+Contributions follow SUFST style: read [DEVELOPER.md](docs/DEVELOPER.md) for naming, testing, and commit conventions before opening a PR.
 
 ---
 
-**Questions?** Check [ARCHITECTURE.md](ARCHITECTURE.md) for the big picture, [DEVELOPER.md](DEVELOPER.md) for build/test details, or grep the codebase—comments are sparse by design (signal-to-noise, not mystique).
+**Questions?** Check [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the big picture, [DEVELOPER.md](docs/DEVELOPER.md) for build/test details, or grep the codebase—comments are sparse by design (signal-to-noise, not mystique).
 
 *Last updated: 2026-07-05. SUFST STAG 12 GPS Node Firmware.*

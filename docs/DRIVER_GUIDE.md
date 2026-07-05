@@ -126,4 +126,4 @@ Result: timing is accurate to ~1 ms and unaffected by GPS latency or dropouts.
 
 ---
 
-**Have questions?** Check the [README](README.md) or ask the team.
+**Have questions?** Check the [README](../README.md) or ask the team.

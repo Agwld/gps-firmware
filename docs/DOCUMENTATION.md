@@ -87,6 +87,6 @@ pandoc README.md -o README.pdf --pdf-engine=xhtml2pdf
 
 ---
 
-**Lost? Start with [README.md](README.md).**
+**Lost? Start with [README.md](../README.md).**
 
 *Last updated: 2026-07-05*

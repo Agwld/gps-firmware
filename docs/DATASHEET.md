@@ -185,7 +185,7 @@ Stack sizes are conservative; each task could be reduced by ~500 bytes if needed
 
 ### CAN message matrix (ID 0x6B0–0x6BF)
 
-All little-endian Intel-style packing per SUFST convention. See [tools/GPS.dbc](tools/GPS.dbc) for authoritative definitions.
+All little-endian Intel-style packing per SUFST convention. See [tools/GPS.dbc](../tools/GPS.dbc) for authoritative definitions.
 
 #### TX messages (broadcasts from node)
 
@@ -299,4 +299,4 @@ Standard SUFST 65×85 mm form factor with M3 mounting holes at corners. Clearanc
 
 ---
 
-**For complete schematic & layout, see:** [`gps-mainboard.pdf`](gps-mainboard.pdf) (KiCad project at `/pcb/gps-mainboard/`)
+**For complete schematic & layout, see:** [`gps-mainboard.pdf`](../gps-mainboard.pdf) (KiCad project at `/pcb/gps-mainboard/`)
