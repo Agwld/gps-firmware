@@ -50,8 +50,27 @@ set(CMAKE_CXX_FLAGS_RELEASE "-Os -g0")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")
 
+# MCU variant fitted on the board. The gps-mainboard is confirmed CB
+# (128 KB flash); C8 (64 KB) is kept selectable for interchangeability
+# testing via -DGPS_MCU_VARIANT=C8. GPS_FLASH_TOTAL_KB is forwarded to the
+# main CMakeLists.txt as a compile definition so flash_store.c derives its
+# reserved-page address from the same number that sized the linker script,
+# instead of a second hand-maintained constant that could drift from it.
+set(GPS_MCU_VARIANT "CB" CACHE STRING "STM32G431 flash variant: C8 (64K) or CB (128K, fitted part)")
+set_property(CACHE GPS_MCU_VARIANT PROPERTY STRINGS C8 CB)
+
+if(GPS_MCU_VARIANT STREQUAL "C8")
+    set(GPS_LINKER_SCRIPT "STM32G431X8_FLASH.ld" CACHE INTERNAL "")
+    set(GPS_FLASH_TOTAL_KB 64 CACHE INTERNAL "")
+elseif(GPS_MCU_VARIANT STREQUAL "CB")
+    set(GPS_LINKER_SCRIPT "STM32G431XB_FLASH.ld" CACHE INTERNAL "")
+    set(GPS_FLASH_TOTAL_KB 128 CACHE INTERNAL "")
+else()
+    message(FATAL_ERROR "GPS_MCU_VARIANT must be C8 or CB, got '${GPS_MCU_VARIANT}'")
+endif()
+
 set(CMAKE_EXE_LINKER_FLAGS "${TARGET_FLAGS}")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -T \"${CMAKE_SOURCE_DIR}/STM32G431X8_FLASH.ld\"")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -T \"${CMAKE_SOURCE_DIR}/${GPS_LINKER_SCRIPT}\"")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --specs=nano.specs")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-Map=${CMAKE_PROJECT_NAME}.map -Wl,--gc-sections")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--print-memory-usage")

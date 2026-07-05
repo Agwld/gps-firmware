@@ -1,11 +1,8 @@
 /*
- * Linker script for STM32G431C8Tx (64 KB flash / 32 KB RAM).
+ * Linker script for STM32G431CBTx (128 KB flash / 32 KB RAM) - the fitted
+ * part on the gps-mainboard (rev 1.0.0).
  *
- * The fitted part on the gps-mainboard is the 128 KB CB variant (see
- * STM32G431XB_FLASH.ld, the default); this C8 script is kept only for
- * interchangeability testing, selectable via -DGPS_MCU_VARIANT=C8.
- *
- * FLASH is 62 KB: the last 2 KB page (0x0800F800) is reserved for the
+ * FLASH is 126 KB: the last 2 KB page (0x0801F800) is reserved for the
  * flash_store config/gate records and must never hold code. Kept out of
  * the FLASH memory region entirely (rather than just documented) so the
  * linker can never place a section there.
@@ -14,6 +11,9 @@
  * CCMRAM (10 KB at 0x10000000) holds task stacks, hot fusion state and the
  * RAM-executed flash program routines (.ccmfunc) so they survive flash
  * stalls during page erase.
+ *
+ * See STM32G431X8_FLASH.ld for the smaller-flash (C8, 64 KB) variant of
+ * this same script, selectable via -DGPS_MCU_VARIANT=C8.
  */
 
 ENTRY(Reset_Handler)
@@ -25,7 +25,7 @@ _Min_Stack_Size = 0x400;   /* MSP: startup + ISRs */
 
 MEMORY
 {
-  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 62K
+  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 126K
   RAM    (xrw) : ORIGIN = 0x20000000, LENGTH = 22K
   CCMRAM (xrw) : ORIGIN = 0x10000000, LENGTH = 10K
 }

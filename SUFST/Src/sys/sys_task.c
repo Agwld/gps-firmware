@@ -23,11 +23,16 @@
 #include "persist/flash_store.h"
 #include "sys/app.h"
 
-/* MCP9800, I2C2. Ambient temperature register 0x00; default 9-bit
- * resolution, 0.5 C/LSB, left-justified in a 16-bit big-endian word
- * (value = (raw >> 7) * 0.5). Verify against the MCP9800 datasheet
- * before trusting the resolution/register assumption on the bench. */
-#define MCP9800_I2C_ADDR (0x48U << 1)
+/* MCP9800, I2C2. Fitted part per schematic (U21) is MCP9800A5T-M/OT -
+ * the SOT-23-5 package with a factory-fixed address, no A0-A2 pins.
+ * Datasheet Table 3-2 gives the A5 variant's 7-bit address as 1001101b
+ * = 0x4D (NOT the commonly-assumed 0x48, which is the A0 variant).
+ * Ambient temperature register 0x00; default power-up resolution is
+ * 9-bit / 0.5 degC per LSB with only bit 15..7 of the 16-bit big-endian
+ * register populated (bits 6..0 forced 0), so raw>>7 * 0.5 == raw/256,
+ * matching datasheet Eq. 5-2 (TA = Code * 2^-4) for that register
+ * layout. Confirmed against 21909d.pdf (MCP9800/1/2/3 datasheet). */
+#define MCP9800_I2C_ADDR (0x4DU << 1)
 #define MCP9800_REG_TEMP 0x00U
 
 /* Lap button press-duration thresholds (board_config.h), sampled every

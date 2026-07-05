@@ -185,7 +185,18 @@ flash_store_restore(const uint8_t *page, uint32_t page_size,
 
 #include "main.h"
 
-#define FLASH_STORE_PAGE_ADDR 0x0800F800U
+#ifndef GPS_FLASH_TOTAL_KB
+#error "GPS_FLASH_TOTAL_KB must be supplied by the build (see CMakeLists.txt) \
+so the reserved page tracks whichever linker script (C8/CB) was used."
+#endif
+
+/* Last 2 KB page of flash, whichever variant this was built for - this
+ * must stay in lockstep with the FLASH region length in
+ * STM32G431X8_FLASH.ld / STM32G431XB_FLASH.ld, which is why both derive
+ * from the single GPS_FLASH_TOTAL_KB the build picks (CMakeLists.txt +
+ * cmake/gcc-arm-none-eabi.cmake), not two hand-maintained constants. */
+#define FLASH_STORE_PAGE_ADDR \
+    (FLASH_BASE + (GPS_FLASH_TOTAL_KB * 1024U) - FLASH_STORE_PAGE_SIZE)
 
 static uint32_t
 flash_store_page_number(void)

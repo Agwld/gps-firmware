@@ -1,8 +1,7 @@
 /**
  * @file    lsm6dso32.c
- * @brief   LSM6DSO32 + sensor-hub IIS2MDC driver (see lsm6dso32.h for the
- *          register-accuracy caveat - verify against the datasheet/
- *          AN5192 before trusting this on the bench).
+ * @brief   LSM6DSO32 + sensor-hub IIS2MDC driver (see lsm6dso32.h for what
+ *          has and hasn't been checked against the datasheets/AN5192).
  */
 
 #include "imu/lsm6dso32.h"
@@ -35,16 +34,26 @@
 #define REG_SLV0_SUBADD   0x16U
 #define REG_SLV0_CONFIG   0x17U
 
-#define MASTER_CONFIG_MASTER_ON (1U << 2)
+#define MASTER_CONFIG_MASTER_ON   (1U << 2)
+/* AN5192 Section 7.2.1: "The WRITE_ONCE bit must be set to 1 if slave 0
+ * is used for read transactions" - mandatory, not just for repeated
+ * writes despite the name. The app note's own continuous-read reference
+ * example (Section 7.4) sets this bit alongside MASTER_ON. */
+#define MASTER_CONFIG_WRITE_ONCE (1U << 6)
 
 /* IIS2MDC (magnetometer) I2C address and output register */
 #define IIS2MDC_I2C_ADDR   0x1EU
 #define IIS2MDC_OUTX_L_REG 0x68U
 #define IIS2MDC_READ_LEN   6U
 
-/* CTRL3_C: BDU (block data update) so a multi-byte read can't straddle a
- * sensor-side update. */
-#define CTRL3_C_BDU (1U << 6)
+/* CTRL3_C: BDU (block data update, bit6) so a multi-byte read can't
+ * straddle a sensor-side update, and IF_INC (bit2, register address
+ * auto-increment on multi-byte access - default-on out of reset, but
+ * this is a full-register write, not read-modify-write, so it must be
+ * set explicitly here too or the burst reads below silently re-read
+ * OUT_TEMP_L 14/6 times instead of walking the register map). */
+#define CTRL3_C_BDU    (1U << 6)
+#define CTRL3_C_IF_INC (1U << 2)
 
 #define IMU_ACCEL_SENSITIVITY_G_PER_LSB (IMU_ACCEL_FS_G / 32768.0f)
 #define IMU_GYRO_SENSITIVITY_DPS_PER_LSB (IMU_GYRO_FS_DPS / 32768.0f)
@@ -100,16 +109,20 @@ lsm6dso32_init(void)
         return STATUS_TIMEOUT;
     }
 
-    /* CTRL1_XL: ODR=104 Hz, FS=+-32g mode bit per part variant, HP
-     * filter off. ODR/FS field encodings are part of the same register
-     * map this file's header flags as needing datasheet verification. */
-    if (write_reg(REG_CTRL1_XL, 0x4CU) != STATUS_OK) { /* 104 Hz, +-32 g */
+    /* CTRL1_XL = 0x4C: ODR[3:0]=0100 (104 Hz), FS[1:0]=11 (+-16 g,
+     * matching board_config.h's IMU_ACCEL_FS_G), LPF2_XL_EN=0 (first
+     * digital filter stage, not LPF2). +-16 g, not +-32 g - the DSO32's
+     * extended range isn't used here; verified bit-by-bit against the
+     * LSM6DSO32 datasheet CTRL1_XL/Table 44/45 encoding. */
+    if (write_reg(REG_CTRL1_XL, 0x4CU) != STATUS_OK) { /* 104 Hz, +-16 g */
         return STATUS_ERROR;
     }
+    /* CTRL2_G = 0x4C: ODR[3:0]=0100 (104 Hz), FS[1:0]=11 (+-2000 dps,
+     * matching IMU_GYRO_FS_DPS), FS_125=0. */
     if (write_reg(REG_CTRL2_G, 0x4CU) != STATUS_OK) { /* 104 Hz, +-2000 dps */
         return STATUS_ERROR;
     }
-    if (write_reg(REG_CTRL3_C, CTRL3_C_BDU) != STATUS_OK) {
+    if (write_reg(REG_CTRL3_C, CTRL3_C_BDU | CTRL3_C_IF_INC) != STATUS_OK) {
         return STATUS_ERROR;
     }
 
@@ -133,7 +146,15 @@ lsm6dso32_mag_init(void)
         st = write_reg(REG_SLV0_CONFIG, IIS2MDC_READ_LEN);
     }
     if (st == STATUS_OK) {
-        st = write_reg(REG_MASTER_CONFIG, MASTER_CONFIG_MASTER_ON);
+        /* SHUB_PU_EN deliberately left clear: R27/R28 on the board
+         * already pull MAG_SCL/MAG_SDA up to 3V3 (confirmed in the
+         * gps-mainboard netlist), so the internal pull-up isn't needed -
+         * matches the "external pull-ups present" case in AN5192's
+         * SHUB_PU_EN description, as opposed to its reference example
+         * (which sets it because *that* example assumes no external
+         * pull-ups). */
+        st = write_reg(REG_MASTER_CONFIG,
+                        MASTER_CONFIG_MASTER_ON | MASTER_CONFIG_WRITE_ONCE);
     }
 
     /* Back to the main register bank regardless of the above outcome -

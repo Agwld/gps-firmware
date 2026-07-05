@@ -3,16 +3,30 @@
  * @brief   LSM6DSO32 accel+gyro driver, plus IIS2MDC magnetometer bring-up
  *          via the LSM6DSO32's sensor-hub I2C master (AN5192).
  *
- * IMPORTANT: register addresses/bit positions below are transcribed from
- * memory of the LSM6DSO32 datasheet and AN5192 (sensor-hub application
- * note), not re-checked against either document in this session. The
- * core WHO_AM_I / CTRL1_XL / CTRL2_G / output-register set is common and
- * stable across the whole ST LSM6DSx family and is held with reasonably
- * high confidence; the sensor-hub bring-up sequence (register bank
- * switch, SLV0 config, disable-master/settle timing) is the fiddlier
- * part AN5192 exists specifically to document precisely, and MUST be
- * checked against it - and against a logic analyzer trace of the actual
- * IIS2MDC responding - before trusting mag data from this on the bench.
+ * Register addresses/bit positions (WHO_AM_I=0x6C, CTRL1_XL/CTRL2_G/
+ * CTRL3_C layout and reset defaults, OUT_TEMP_L..OUTZ_H_A map, the SHUB
+ * bank's FUNC_CFG_ACCESS/SLV0_ADD/SLV0_SUBADD/SLAVE0_CONFIG/
+ * MASTER_CONFIG registers, and the IIS2MDC's 0x1E address /
+ * OUTX_L_REG=0x68 / 1.5 mgauss-per-LSB sensitivity) have been checked
+ * bit-by-bit against the LSM6DSO32 and IIS2MDC datasheets, and the
+ * sensor-hub bring-up sequence against AN5192 (Section 7.2/7.4) and the
+ * gps-mainboard netlist. This caught two real bugs, both now fixed:
+ * CTRL3_C's IF_INC bit being cleared by the BDU-only write (would have
+ * broken every multi-byte burst read), and MASTER_CONFIG's WRITE_ONCE
+ * bit not being set - AN5192 states this is mandatory for slave 0 read
+ * transactions despite the name, and its own reference example sets it.
+ * SHUB_PU_EN is deliberately left clear: R27/R28 on the board already
+ * pull the sensor-hub I2C lines up to 3V3 (confirmed in the netlist),
+ * matching the "external pull-ups present" case AN5192 describes for
+ * that bit, not its example (which has no external pull-ups).
+ *
+ * lsm6dso32_mag_init() is a one-shot call (never re-run to reconfigure
+ * a running sensor hub), so AN5192's disable-master-then-wait-300us
+ * procedure - required only when changing an *already-running*
+ * configuration - doesn't apply here; if a retry-after-fault path is
+ * ever added that calls this a second time, add that procedure first.
+ * Still worth a logic analyzer trace of the IIS2MDC actually responding
+ * before trusting mag data on the bench, as with any first bring-up.
  */
 
 #ifndef LSM6DSO32_H

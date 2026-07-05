@@ -37,11 +37,16 @@ time-marking, and a CAN telemetry stream for the rest of the car.
 | GPIO | PC13/PC14/PA5/... | Lap button, user button, GPS EXTINT tap, status/fault lines |
 
 - **MCU**: STM32G431 (170 MHz Cortex-M4F). The fitted part is confirmed
-  as the **CB** (128 KB flash). The full firmware currently links at
-  ~58 KB / 62 KB (92%) against the smaller **C8** variant it was
-  originally sized for — comfortably inside CB's budget with ~2x
-  headroom, tight but real headroom if the team ever wants C8
-  interchangeability.
+  as the **CB** (128 KB flash), and the build now targets it by default
+  (`STM32G431XB_FLASH.ld`, 126 KB usable + reserved last page): Release
+  links at ~58 KB / 126 KB (45%), Debug (`-O0`) at ~94 KB / 126 KB (73%)
+  — both fit comfortably, including the previously-C8-constrained Debug
+  build. The smaller **C8** (64 KB) is still selectable for
+  interchangeability testing via `-DGPS_MCU_VARIANT=C8` (Release still
+  fits C8 at ~58 KB / 62 KB, 92%; Debug does not). `flash_store.c`'s
+  reserved last page tracks whichever variant is selected via the
+  `GPS_FLASH_TOTAL_KB` compile definition, so it can't drift out of sync
+  with the linker script.
 - **GNSS**: u-blox ZED-F9P (SparkFun MicroMod GNSS function board),
   configured for GPS+Galileo only at 20 Hz (25 Hz needs a harsher
   constellation cut than this firmware wants).
@@ -279,15 +284,35 @@ needs a bench to confirm," not "done":
   sensor-hub magnetometer bring-up, the ZED-F9P boot configuration
   (UBX-CFG-VALSET), and all five FreeRTOS tasks (`imu_task`, `gps_task`,
   `can_task`, `aux_task`, `sys_task`) and their wiring in `app.c`.
-- **Explicitly flagged as needing datasheet/bench verification**, since
-  they were written from memory rather than the source documents: the
-  LSM6DSO32 register map and sensor-hub bring-up sequence
-  ([lsm6dso32.h](SUFST/Inc/imu/lsm6dso32.h)), the u-blox CFG-\* key IDs
-  used for boot configuration ([gps_config.h](SUFST/Inc/gps/gps_config.h)
-  — mitigated by verifying via VALGET readback rather than trusting the
-  VALSET ACK, which the design already does regardless of who wrote it),
-  the MCP9800 register/resolution assumption, and the `Wheel_Speeds`
-  (0x251) byte layout.
+- **Checked bit-by-bit against the component datasheets, the u-blox
+  Interface Description (UBX-22008968), and AN5192** in two later
+  passes — every register address, bit position, byte offset and key ID
+  actually used by this firmware, across all four ICs, has now been
+  checked against its source document, catching three real bugs (see
+  changelog below):
+  - LSM6DSO32 + sensor-hub bring-up
+    ([lsm6dso32.h](SUFST/Inc/imu/lsm6dso32.h)): WHO_AM_I, CTRL1_XL/
+    CTRL2_G ODR+FS encoding, CTRL3_C, the SHUB-bank registers and the
+    IIS2MDC's address/register/sensitivity checked against the two
+    component datasheets; the sensor-hub bring-up *sequence and
+    mandatory bits* (MASTER_CONFIG's WRITE_ONCE/SHUB_PU_EN, and when
+    the disable-master/300 µs procedure does and doesn't apply) checked
+    against AN5192 directly, cross-referenced with the gps-mainboard
+    netlist to confirm R27/R28 provide external I2C pull-ups on the
+    sensor-hub bus.
+  - MCP9800 ([sys_task.c](SUFST/Src/sys/sys_task.c)): 9-bit-mode
+    conversion math was right, I2C address was wrong (below).
+  - ZED-F9P: hardware-level assumptions (default 38400 8N1, baud range,
+    EXTINT/SAFEBOOT_N handling) against the datasheet, and — once the
+    Interface Description became available — every UBX-layer detail
+    this firmware depends on: all 12 CFG-\* key IDs and widths used for
+    boot configuration (including the DYNMODEL "automotive" = 4 enum
+    value), the UBX-CFG-VALSET/VALGET payload framing, and the full
+    UBX-NAV-PVT (all 20 decoded fields) and UBX-TIM-TM2 (all 10 fields)
+    byte layouts in [ubx.c](SUFST/Src/gps/ubx.c) — all found correct,
+    no changes needed.
+  - **Still unverified**: the `Wheel_Speeds` (0x251) byte layout (no
+    source document for that one in this pass).
 - **Known gaps, not silent ones**: gate *clears* aren't persisted to
   flash (only sets); CPU load reporting in `GPS_Status` is a placeholder
   zero (`configGENERATE_RUN_TIME_STATS` isn't wired up); the IMU SPI path
@@ -303,3 +328,38 @@ host tests), and this toolchain's prebuilt `libm.a` ships a genuinely
 broken `__errno` (a packaging defect, not a project bug) worked around
 with a local stub in
 [Core/Src/syscalls_errno.c](Core/Src/syscalls_errno.c).
+
+The datasheet cross-check passes above found three more, all on real
+register/address/bit values that would have failed silently or noisily
+on the bench rather than at compile time:
+
+- **MCP9800 I2C address was wrong.** The schematic's fitted part is
+  `MCP9800A5T-M/OT` (the SOT-23-5, factory-fixed-address variant); its
+  datasheet slave-address table gives the A5 variant's address as
+  `0x4D`, not the `0x48` (the A0 variant's address) the driver had
+  hardcoded. Every temperature read would have NACKed on real hardware.
+- **LSM6DSO32's `CTRL3_C` write cleared `IF_INC`** (register address
+  auto-increment on multi-byte access), because it wrote only the BDU
+  bit as a full-register value instead of OR-ing both bits in — `IF_INC`
+  defaults on out of reset, so a partial write of `0x40` explicitly
+  turned it back off. Every burst SPI read in `lsm6dso32_read()` /
+  `lsm6dso32_read_mag()` would have silently re-read the first register
+  14 (or 6) times instead of walking the accel/gyro/mag output map.
+- **LSM6DSO32's sensor-hub `MASTER_CONFIG` write was missing
+  `WRITE_ONCE`.** AN5192 states this bit "must be set to 1 if slave 0
+  is used for read transactions" (despite the name), and its own
+  reference example for continuous sensor-hub reads sets it alongside
+  `MASTER_ON`. The driver only set `MASTER_ON`. (`SHUB_PU_EN`, the
+  other bit AN5192's example sets, was checked and correctly left
+  clear — the gps-mainboard netlist confirms R27/R28 already provide
+  external pull-ups on that I2C bus.)
+
+Also: the board's confirmed CB (128 KB flash) part was documented above
+but the build system was still hardcoded to the smaller C8 (64 KB)
+memory map and its reserved flash-store page address — meaning the
+extra 64 KB was never actually reachable, and Debug (`-O0`) builds
+didn't fit at all. The build now targets CB by default
+(`STM32G431XB_FLASH.ld`), with C8 kept selectable via
+`-DGPS_MCU_VARIANT=C8` for interchangeability testing; both the linker
+script and `flash_store.c`'s reserved-page address derive from the same
+`GPS_FLASH_TOTAL_KB` so they can't drift apart again.

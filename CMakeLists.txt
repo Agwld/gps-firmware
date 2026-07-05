@@ -17,10 +17,19 @@ endif()
 # Target firmware build
 # ---------------------------------------------------------------------------
 
+if(NOT DEFINED GPS_FLASH_TOTAL_KB)
+    message(FATAL_ERROR "GPS_FLASH_TOTAL_KB not set - toolchain file "
+                         "(cmake/gcc-arm-none-eabi.cmake) must run before "
+                         "this point to select the MCU variant.")
+endif()
+
 add_compile_definitions(
     USE_HAL_DRIVER
     STM32G431xx
+    GPS_FLASH_TOTAL_KB=${GPS_FLASH_TOTAL_KB}
 )
+
+message(STATUS "GPS MCU variant: ${GPS_MCU_VARIANT} (${GPS_FLASH_TOTAL_KB} KB flash, linker: ${GPS_LINKER_SCRIPT})")
 
 # --- CMSIS + device startup ------------------------------------------------
 
