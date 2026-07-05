@@ -4,19 +4,6 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 
 ## Hardware specifications
 
-### Board dimensions & connectors
-
-| Spec | Value |
-|------|-------|
-| PCB size | 65 mm × 85 mm, 4 layers |
-| **Main connectors** | — |
-| CAN | Molex Micro-Fit 3.0, 2-pin (CAN-H, CAN-L) |
-| RS232 | DB-9 female (RS232/MAX3232, MoTeC datalogger) |
-| GPS antenna | SMA female (u-blox ZED-F9P internal antenna connector) |
-| Steering wheel button | 2-pin header (ground + signal) |
-| JTAG/debug | 20-pin 0.1" header (STM32 SWD: GND, SWCLK, SWDIO, 3V3) |
-| IMU & temp I2C | Internal (on-board sensor bus) |
-
 ### Microcontroller
 
 | Component | Spec |
