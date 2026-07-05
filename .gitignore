@@ -5,3 +5,9 @@ build/
 *.bin
 *.map
 build-host/
+
+# Python (tools/dashboard)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

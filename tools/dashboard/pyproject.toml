@@ -1,0 +1,26 @@
+[project]
+name = "sufst-gps-dashboard"
+version = "0.1.0"
+description = "Live/replay CAN dashboard for the STAG 12 GPS node (tools/GPS.dbc)"
+requires-python = ">=3.12"
+dependencies = [
+    "cantools>=39",
+    "pyqt6>=6.6",
+    "pyqtgraph>=0.13",
+    "python-can>=4.3",
+]
+
+[project.scripts]
+gps-dashboard = "gps_dashboard.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gps_dashboard"]
