@@ -89,4 +89,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._stop_ingest()
+        # Remember this track's outline so it reloads next time we see the
+        # same gate layout.
+        self._track_map.save_current()
         super().closeEvent(event)

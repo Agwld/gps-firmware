@@ -21,7 +21,7 @@ def test_simulate_produces_all_message_types_and_decodes_cleanly():
             decoded = decoder.decode(raw)
             assert decoded is not None, "simulator must only emit DBC-valid frames"
             seen_names.add(decoded.name)
-            if len(seen_names) >= 10 and time.monotonic() - start > 1.1:
+            if len(seen_names) >= 12 and time.monotonic() - start > 1.1:
                 stop.set()
 
     start = time.monotonic()
@@ -41,8 +41,47 @@ def test_simulate_produces_all_message_types_and_decodes_cleanly():
         "GPS_Temp",
         "GPS_Status",
         "GPS_Mag",
+        "GPS_Frame_Origin",
+        "GPS_Gate",
     }
     assert seen_names == expected
+
+
+def test_simulate_emits_origin_and_all_gate_slots():
+    """The frame origin decodes to the configured origin, and the gate
+    round-robin covers all four simulated slots (start/finish + 3
+    sectors), each valid."""
+    decoder = Decoder()
+    source = SimulateCanSource(
+        decoder, origin_lat_deg=50.0, origin_lon_deg=-1.0
+    )
+    stop = threading.Event()
+
+    gate_indices: set[int] = set()
+    origin_seen: dict[str, float] = {}
+
+    def consume():
+        for raw in source.frames(stop):
+            decoded = decoder.decode(raw)
+            if decoded is None:
+                continue
+            if decoded.name == "GPS_Frame_Origin":
+                origin_seen["lat"] = decoded.signals["origin_lat_deg"]
+                origin_seen["lon"] = decoded.signals["origin_lon_deg"]
+            elif decoded.name == "GPS_Gate":
+                assert decoded.signals["gate_flags"] & 0x01, "gate must be valid"
+                gate_indices.add(int(decoded.signals["gate_index"]))
+            if gate_indices >= {0, 1, 2, 3} and origin_seen:
+                stop.set()
+                return
+
+    t = threading.Thread(target=consume)
+    t.start()
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "never saw all gate slots + origin"
+    assert gate_indices == {0, 1, 2, 3}
+    assert abs(origin_seen["lat"] - 50.0) < 1e-6
+    assert abs(origin_seen["lon"] - (-1.0)) < 1e-6
 
 
 def test_simulate_position_stays_near_origin_on_a_bounded_track():
