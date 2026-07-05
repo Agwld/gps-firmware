@@ -56,25 +56,27 @@ _MESSAGE_RATES: list[tuple[str, float]] = [
 
 #: Circuit shape: waypoints (east, north) in metres for a nominal
 #: track_radius_m=30 track, scaled by track_radius_m/30 at construction.
-#: A closed loop with a start straight, a tight left hairpin, a chicane
-#: and a fast right sweeper - kept within ~+-36 m east so it stays close
-#: to the origin. The Catmull-Rom spline below rounds the corners.
+#: A closed loop with a genuine main straight along the bottom (the
+#: start/finish sits on it, not in a corner), then a fast right-hand
+#: sweeper, a tighter left complex up top, and back down the left side.
+#: The three collinear points along the bottom keep that section dead
+#: straight through the Catmull-Rom spline; kept within ~+-36 m east so it
+#: stays close to the origin.
 _TRACK_WAYPOINTS: list[tuple[float, float]] = [
-    (0.0, 0.0),     # start/finish, on the start straight
-    (0.0, 30.0),    # start straight, heading north
-    (-6.0, 46.0),   # turn 1 (left kink)
-    (-22.0, 52.0),
-    (-32.0, 40.0),  # left hairpin
-    (-26.0, 24.0),
-    (-12.0, 22.0),
-    (-18.0, 9.0),   # chicane
-    (-4.0, 3.0),
-    (12.0, 7.0),
-    (30.0, 5.0),    # right sweeper
-    (36.0, 22.0),
-    (26.0, 38.0),
-    (12.0, 40.0),
-    (5.0, 22.0),    # back onto the start straight
+    (-18.0, 0.0),   # start of the main straight
+    (0.0, 0.0),     # start/finish line, mid-straight, heading east
+    (18.0, 0.0),    # end of the main straight
+    (32.0, 8.0),    # turn 1, into the right sweeper
+    (37.0, 26.0),
+    (28.0, 42.0),   # top-right
+    (12.0, 48.0),
+    (2.0, 40.0),    # tighter left complex
+    (8.0, 28.0),
+    (-4.0, 24.0),
+    (-20.0, 30.0),  # top-left sweeper
+    (-33.0, 40.0),
+    (-38.0, 22.0),  # last corner
+    (-32.0, 6.0),   # onto the main straight
 ]
 
 #: Gate slots as fractions of a lap (arc length): start/finish plus three
@@ -90,6 +92,15 @@ _GATE_FRACTIONS: list[tuple[float, int]] = [
 #: Fine samples per waypoint segment when flattening the spline to a
 #: polyline for arc-length marching.
 _SAMPLES_PER_SEGMENT = 40
+
+#: Speed-profile shape limits (m/s^2). These set the *relative* corner-vs-
+#: straight speeds and how sharply the car brakes/accelerates between them;
+#: the whole profile is then time-scaled so a lap takes lap_period_s, so
+#: their absolute values don't fix the absolute speed - only its shape.
+_A_LAT_MAX = 12.0    # cornering grip -> corner speed = sqrt(a_lat/curvature)
+_A_ACCEL_MAX = 6.0   # power-limited acceleration out of a corner
+_A_BRAKE_MAX = 11.0  # braking into a corner
+_V_STRAIGHT_MAX = 45.0  # top speed cap on a straight (pre-scaling)
 
 
 def _catmull_rom(
@@ -168,12 +179,13 @@ class SimulateCanSource(CanSource):
         scale = track_radius_m / 30.0
         wps = [(e * scale, n * scale) for e, n in _TRACK_WAYPOINTS]
         self._build_path(wps)
+        self._build_speed_profile()
 
         # Gates sit on the path at fixed lap fractions, taking the path's
         # own heading there - so their lines lie across the trail.
         self._gates: list[dict[str, float | int]] = []
         for frac, index in _GATE_FRACTIONS:
-            e, n, heading_rad, _ = self._state_at(frac * self._length_m)
+            e, n, heading_rad, _, _, _ = self._sample(frac * self._length_m)
             self._gates.append(
                 {
                     "index": index,
@@ -218,9 +230,61 @@ class SimulateCanSource(CanSource):
         self._kappa = kappa
         self._length_m = cum[-1]
 
-    def _state_at(self, dist_m: float) -> tuple[float, float, float, float]:
-        """(east, north, heading_rad, signed_curvature) at arc-length
-        dist_m along the closed loop (wrapped)."""
+    def _build_speed_profile(self) -> None:
+        """A per-point target speed: cornering-grip-limited where the path
+        is curved, then forward/backward passes so the car brakes into and
+        accelerates out of corners (not step changes), and finally
+        time-scaled so one lap takes lap_period_s. Also stores the
+        longitudinal acceleration that profile implies."""
+        cum = self._cum
+        u = len(self._pts) - 1  # unique points (last duplicates the first)
+        ds = [cum[i + 1] - cum[i] for i in range(u)]
+
+        # Grip-limited corner speed: v = sqrt(a_lat / curvature).
+        v = []
+        for i in range(u):
+            k = abs(self._kappa[i])
+            v.append(
+                _V_STRAIGHT_MAX
+                if k < 1e-6
+                else min(_V_STRAIGHT_MAX, math.sqrt(_A_LAT_MAX / k))
+            )
+
+        # Two wrap-around passes converge the loop seam: brake (backward)
+        # then accelerate (forward), each capping the speed a point can
+        # hold given its neighbour and the accel/brake limit over ds.
+        for _ in range(2):
+            for i in range(u - 1, -1, -1):
+                nxt = (i + 1) % u
+                v[i] = min(v[i], math.sqrt(v[nxt] ** 2 + 2.0 * _A_BRAKE_MAX * ds[i]))
+            for i in range(u):
+                prv = (i - 1) % u
+                v[i] = min(
+                    v[i], math.sqrt(v[prv] ** 2 + 2.0 * _A_ACCEL_MAX * ds[prv])
+                )
+
+        # Time-scale so the lap takes lap_period_s (scaling every speed by
+        # m divides lap time by m).
+        lap_time = sum(ds[i] / v[i] for i in range(u))
+        m = lap_time / self._lap_period_s
+        v = [x * m for x in v]
+
+        # Longitudinal accel a = v dv/ds (>0 accelerating, <0 braking).
+        along = []
+        for i in range(u):
+            nxt = (i + 1) % u
+            along.append(v[i] * (v[nxt] - v[i]) / ds[i] if ds[i] > 1e-9 else 0.0)
+
+        v.append(v[0])
+        along.append(along[0])
+        self._speed = v
+        self._along = along
+
+    def _sample(
+        self, dist_m: float
+    ) -> tuple[float, float, float, float, float, float]:
+        """(east, north, heading_rad, signed_curvature, speed_mps,
+        longitudinal_accel) at arc-length dist_m along the loop (wrapped)."""
         d = dist_m % self._length_m
         i = bisect.bisect_right(self._cum, d) - 1
         i = max(0, min(i, len(self._pts) - 2))
@@ -228,7 +292,7 @@ class SimulateCanSource(CanSource):
         frac = (d - self._cum[i]) / seg if seg > 1e-9 else 0.0
         e = self._pts[i][0] + frac * (self._pts[i + 1][0] - self._pts[i][0])
         n = self._pts[i][1] + frac * (self._pts[i + 1][1] - self._pts[i][1])
-        return e, n, self._heading[i], self._kappa[i]
+        return e, n, self._heading[i], self._kappa[i], self._speed[i], self._along[i]
 
     def frames(self, stop: threading.Event) -> Iterator[RawFrame]:
         t = 0.0
@@ -242,12 +306,14 @@ class SimulateCanSource(CanSource):
             for i, (name, rate) in enumerate(_MESSAGE_RATES)
         }
 
-        # Constant-speed march so a lap takes lap_period_s regardless of
-        # the (fixed) circuit length.
-        speed_mps = self._length_m / self._lap_period_s
+        # March by arc length at the profiled (variable) speed, so the car
+        # slows for corners and accelerates on the straights.
+        dist_m = 0.0
 
         while not stop.is_set():
-            east_m, north_m, heading_rad, kappa = self._state_at(speed_mps * t)
+            east_m, north_m, heading_rad, kappa, speed_mps, along_mps2 = (
+                self._sample(dist_m)
+            )
             lat_deg = self._origin_lat + north_m / _M_PER_DEG_LAT
             lon_deg = self._origin_lon + east_m / self._m_per_deg_lon
 
@@ -256,15 +322,16 @@ class SimulateCanSource(CanSource):
             # (90 - math_bearing) mod 360.
             heading_deg = (90.0 - math.degrees(heading_rad)) % 360.0
 
-            # Lateral load and yaw rate come straight from path curvature:
-            # a_lat = v^2 * kappa, yaw_rate = v * kappa. Signed, so the
-            # dashboard shows left/right corners correctly.
+            # Lateral load and yaw rate come straight from path curvature at
+            # the current speed; longitudinal load from the speed profile.
+            # Signed, so the dashboard shows left/right and accel/brake.
             lateral_g = (speed_mps * speed_mps * kappa) / 9.81
+            longitudinal_g = along_mps2 / 9.81
             yaw_rate_dps = math.degrees(speed_mps * kappa)
-            omega = speed_mps * kappa  # kept for GPS_IMU_Gyro below
 
-            if t - lap_start_t >= self._lap_period_s:
-                lap += 1
+            new_lap = int(dist_m / self._length_m)
+            if new_lap != lap:
+                lap = new_lap
                 lap_start_t = t
             running_time_ms = int((t - lap_start_t) * 1000.0)
 
@@ -297,6 +364,7 @@ class SimulateCanSource(CanSource):
                         speed_mps=speed_mps,
                         heading_deg=heading_deg,
                         lateral_g=lateral_g,
+                        longitudinal_g=longitudinal_g,
                         yaw_rate_dps=yaw_rate_dps,
                         lap=lap,
                         running_time_ms=running_time_ms,
@@ -304,6 +372,7 @@ class SimulateCanSource(CanSource):
                     )
                 yield self._decoder.encode(name, signals)
 
+            dist_m += speed_mps * _TICK_DT
             t += _TICK_DT
             stop.wait(_TICK_DT)
 
@@ -316,6 +385,7 @@ class SimulateCanSource(CanSource):
         speed_mps: float,
         heading_deg: float,
         lateral_g: float,
+        longitudinal_g: float,
         yaw_rate_dps: float,
         lap: int,
         running_time_ms: int,
@@ -351,7 +421,7 @@ class SimulateCanSource(CanSource):
             return {"hacc_mm": 15.0, "sacc_mm_s": 20.0, "pdop": 1.2, "flags": 0x01}
         if name == "GPS_IMU_Accel":
             return {
-                "ax_mg": 0.0,
+                "ax_mg": _clamp(longitudinal_g * 1000.0, _MAX_ACCEL_MG),
                 "ay_mg": _clamp(lateral_g * 1000.0, _MAX_ACCEL_MG),
                 "az_mg": _clamp(1000.0, _MAX_ACCEL_MG),
                 "counter": counter,
