@@ -49,6 +49,21 @@ static mag_cal_result_t s_mag_cal;
 static mag_cal_accumulator_t s_mag_cal_acc;
 static bool s_mag_cal_in_progress;
 
+/* Gates persisted as absolute lat/lon (flash_store), loaded at boot but
+ * only resolvable to ENU once the first fix sets the frame origin - so
+ * they're held here and placed in gates.c at origin time, and the origin
+ * is never known before then. */
+static flash_store_gate_t s_stored_gates[LAP_MAX_GATES];
+static bool s_frame_origin_set;
+
+/* deg -> i32 1e-7 deg (u-blox convention), round half away from zero. */
+static int32_t
+deg_to_1e7(double deg)
+{
+    double scaled = deg * 1e7;
+    return (int32_t) (scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+}
+
 static void
 apply_mag_cal_commands(void)
 {
@@ -122,6 +137,35 @@ quat_to_euler_deg(quat_t q, float *yaw_deg, float *pitch_deg,
     *yaw_deg = (yaw < 0.0f) ? (yaw + 360.0f) : yaw;
 }
 
+/* Persist a live-set gate as absolute lat/lon (reproducible next boot,
+ * unlike the per-boot ENU) and publish it for the ~2 Hz dash broadcast.
+ * Best-effort on flash: if the page is full the gate still lives in RAM
+ * and on the bus; a CONFIG_SAVE compaction (sys_task, when stationary)
+ * reclaims space. */
+static void
+set_and_persist_gate(uint8_t index, float e, float n, float heading_rad)
+{
+    gates_set(index, e, n, heading_rad);
+
+    /* Setting a new start/finish wipes the old sector split (gates.c does
+     * this in RAM); mirror it on flash and on the broadcast so a reboot,
+     * or the dash, doesn't resurrect sectors from the previous layout. */
+    if (index == 0U) {
+        (void) flash_store_save_gates_cleared_all();
+        for (uint8_t i = 1U; i < LAP_MAX_GATES; i++) {
+            canbc_state_set_gate(i, 0.0f, 0.0f, 0.0f, 0U);
+        }
+    }
+
+    double lat_deg, lon_deg;
+    float h;
+    geodesy_from_enu(e, n, 0.0f, &lat_deg, &lon_deg, &h);
+    (void) flash_store_save_gate(index, deg_to_1e7(lat_deg),
+                                  deg_to_1e7(lon_deg), heading_rad);
+
+    canbc_state_set_gate(index, e, n, heading_rad, 1U);
+}
+
 static void
 apply_gate_commands(void)
 {
@@ -130,14 +174,25 @@ apply_gate_commands(void)
 
     while (xQueueReceive(g_gate_cmd_queue, &cmd, 0) == pdTRUE) {
         if (cmd.cmd == CAN_CMD_GATE_SET) {
+            /* A gate is placed at the current fused position, which only
+             * means anything once the ENU frame origin exists. */
+            if (!s_frame_origin_set) {
+                continue;
+            }
             kf6_get_state(&e, &n, NULL, &ve, &vn, NULL);
             float heading_rad = atan2f(vn, ve); /* travel direction */
-            gates_set(cmd.arg0, e, n, heading_rad);
+            set_and_persist_gate(cmd.arg0, e, n, heading_rad);
         } else if (cmd.cmd == CAN_CMD_GATE_CLEAR) {
             if (cmd.arg0 == 0xFFU) {
                 gates_clear_all();
+                (void) flash_store_save_gates_cleared_all();
+                for (uint8_t i = 0U; i < LAP_MAX_GATES; i++) {
+                    canbc_state_set_gate(i, 0.0f, 0.0f, 0.0f, 0U);
+                }
             } else {
                 gates_clear(cmd.arg0);
+                (void) flash_store_save_gate_cleared(cmd.arg0);
+                canbc_state_set_gate(cmd.arg0, 0.0f, 0.0f, 0.0f, 0U);
             }
         }
     }
@@ -157,18 +212,36 @@ handle_gps_fix(void)
         return;
     }
 
-    static bool s_origin_set = false;
     double lat_deg = (double) pvt.lat_1e7 * 1e-7;
     double lon_deg = (double) pvt.lon_1e7 * 1e-7;
     float height_m = (float) pvt.hmsl_mm * 0.001f;
 
-    if (!s_origin_set) {
+    if (!s_frame_origin_set) {
         if (pvt.hacc_mm > GEODESY_ORIGIN_MIN_HACC_MM) {
             return; /* wait for a better fix before anchoring the frame */
         }
         geodesy_set_origin(lat_deg, lon_deg, height_m);
-        s_origin_set = true;
+        s_frame_origin_set = true;
         app_set_events(SYS_EVT_ORIGIN_SET);
+
+        /* The frame now exists, so the absolute-lat/lon gates restored from
+         * flash can finally be resolved to ENU and placed. Publish the
+         * origin and every gate slot for the dash broadcast (invalid slots
+         * too, so a dash that just connected learns which are empty). */
+        canbc_state_set_origin(pvt.lat_1e7, pvt.lon_1e7);
+        for (uint8_t i = 0U; i < LAP_MAX_GATES; i++) {
+            if (s_stored_gates[i].valid) {
+                float e_g, n_g, u_g;
+                geodesy_to_enu((double) s_stored_gates[i].lat_1e7 * 1e-7,
+                               (double) s_stored_gates[i].lon_1e7 * 1e-7,
+                               height_m, &e_g, &n_g, &u_g);
+                gates_set(i, e_g, n_g, s_stored_gates[i].heading_rad);
+                canbc_state_set_gate(i, e_g, n_g,
+                                     s_stored_gates[i].heading_rad, 1U);
+            } else {
+                canbc_state_set_gate(i, 0.0f, 0.0f, 0.0f, 0U);
+            }
+        }
         return; /* this fix defines (0,0,0); nothing to correct against yet */
     }
 
@@ -232,8 +305,11 @@ imu_task_main(void *argument)
     gates_init();
     laptimer_init();
     s_mag_cal_in_progress = false;
-    flash_store_init(&s_mag_cal); /* restores gates too; falls back to
-                                    * identity calibration if none saved */
+    /* Loads the persisted gate table (absolute lat/lon) into
+     * s_stored_gates and the mag calibration; the gates are placed into
+     * gates.c later, once the first fix sets the ENU origin. Falls back to
+     * identity calibration / no gates if nothing was saved. */
+    flash_store_init(s_stored_gates, LAP_MAX_GATES, &s_mag_cal);
 
     uint32_t prev_tick = timebase_get_tick();
     float prev_e = 0.0f, prev_n = 0.0f;

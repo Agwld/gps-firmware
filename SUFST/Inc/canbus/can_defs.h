@@ -40,6 +40,8 @@ extern "C" {
 #define CAN_ID_GPS_TEMP      0x6B8U /* 1 Hz */
 #define CAN_ID_GPS_STATUS    0x6B9U /* 1 Hz */
 #define CAN_ID_GPS_MAG       0x6BAU /* 10 Hz */
+#define CAN_ID_GPS_FRAME_ORIGIN 0x6BBU /* 1 Hz - ENU origin lat/lon */
+#define CAN_ID_GPS_GATE      0x6BCU /* ~5 Hz aggregate, round-robin per slot */
 #define CAN_ID_GPS_COMMAND   0x6BFU /* RX, event */
 
 /* Frame lengths (bytes) - match tools/GPS.dbc `BO_` length fields */
@@ -54,6 +56,8 @@ extern "C" {
 #define CAN_DLC_GPS_TEMP      6U
 #define CAN_DLC_GPS_STATUS    7U
 #define CAN_DLC_GPS_MAG       7U
+#define CAN_DLC_GPS_FRAME_ORIGIN 8U
+#define CAN_DLC_GPS_GATE      8U
 #define CAN_DLC_GPS_COMMAND   3U
 
 /* ------------------------------------------------------------------ */
@@ -185,6 +189,29 @@ typedef struct {
     uint8_t cal_status;  /* 0 uncalibrated, 1 calibrating, 2 calibrated */
 } can_gps_mag_t;
 
+/* 0x6BB GPS_Frame_Origin - the ENU origin the gates/track are relative
+ * to, as absolute lat/lon. Broadcast so a dash can place the ENU gates
+ * (and its own track breadcrumb) in a common frame; re-sent every boot
+ * since the origin is re-anchored at each power-up's first fix. */
+typedef struct {
+    double lat_deg; /* raw i32, LSB = 1e-7 deg */
+    double lon_deg; /* raw i32, LSB = 1e-7 deg */
+} can_gps_frame_origin_t;
+
+/* 0x6BC GPS_Gate - one lap gate, round-robined a slot at a time. Position
+ * is ENU metres relative to GPS_Frame_Origin (i16 0.1 m, +-3276.7 m spans
+ * any FS track). `index` is a plain data field (which slot this is), not a
+ * DBC multiplexor - every frame has the same layout. */
+typedef struct {
+    uint8_t index;      /* 0 = start/finish, 1..7 = sector */
+    uint8_t flags;      /* bit0 = valid (0 => slot empty/cleared) */
+    float east_m;       /* raw i16, LSB = 0.1 m */
+    float north_m;      /* raw i16, LSB = 0.1 m */
+    float heading_deg;  /* raw u16, LSB = 0.1 deg, [0, 360) */
+} can_gps_gate_t;
+
+#define CAN_GPS_GATE_FLAG_VALID (1U << 0)
+
 /* 0x6BF GPS_Command (RX) */
 typedef struct {
     uint8_t cmd;  /* CAN_CMD_* */
@@ -243,6 +270,14 @@ status_t can_unpack_gps_mag(const uint8_t in[8], can_gps_mag_t *out);
 status_t can_pack_gps_command(const can_gps_command_t *in, uint8_t out[8]);
 status_t can_unpack_gps_command(const uint8_t in[8],
                                  can_gps_command_t *out);
+
+status_t can_pack_gps_frame_origin(const can_gps_frame_origin_t *in,
+                                    uint8_t out[8]);
+status_t can_unpack_gps_frame_origin(const uint8_t in[8],
+                                      can_gps_frame_origin_t *out);
+
+status_t can_pack_gps_gate(const can_gps_gate_t *in, uint8_t out[8]);
+status_t can_unpack_gps_gate(const uint8_t in[8], can_gps_gate_t *out);
 
 #ifdef __cplusplus
 }

@@ -65,6 +65,8 @@ enum {
     ROTA_GPS_TEMP,
     ROTA_GPS_STATUS,
     ROTA_GPS_MAG,
+    ROTA_GPS_FRAME_ORIGIN,
+    ROTA_GPS_GATE,
     ROTA_COUNT,
 };
 
@@ -80,6 +82,12 @@ static const canbc_rota_entry_t s_rota[ROTA_COUNT] = {
     [ROTA_GPS_TEMP] = {CAN_ID_GPS_TEMP, CAN_DLC_GPS_TEMP, 100, 8},
     [ROTA_GPS_STATUS] = {CAN_ID_GPS_STATUS, CAN_DLC_GPS_STATUS, 100, 58},
     [ROTA_GPS_MAG] = {CAN_ID_GPS_MAG, CAN_DLC_GPS_MAG, 10, 6},
+    /* Dash-facing map data, kept slow to stay light on the bus: origin at
+     * 1 Hz; the gate entry fires at 5 Hz but round-robins one slot per
+     * fire, so all 8 gates refresh in ~1.6 s. */
+    [ROTA_GPS_FRAME_ORIGIN] =
+        {CAN_ID_GPS_FRAME_ORIGIN, CAN_DLC_GPS_FRAME_ORIGIN, 100, 9},
+    [ROTA_GPS_GATE] = {CAN_ID_GPS_GATE, CAN_DLC_GPS_GATE, 20, 3},
 };
 
 static status_t
@@ -183,6 +191,37 @@ send_rota_entry(uint32_t which, const canbc_state_t *s)
                             s->mag_cal_status};
         can_pack_gps_mag(&m, buf);
         break;
+    }
+    case ROTA_GPS_FRAME_ORIGIN: {
+        /* Don't advertise an origin until the frame is anchored - a (0,0)
+         * origin would drop the dash's gates in the Gulf of Guinea. */
+        if (!s->origin_valid) {
+            return;
+        }
+        can_gps_frame_origin_t m = {(double) s->origin_lat_1e7 * 1e-7,
+                                     (double) s->origin_lon_1e7 * 1e-7};
+        can_pack_gps_frame_origin(&m, buf);
+        break;
+    }
+    case ROTA_GPS_GATE: {
+        /* Round-robin one slot per fire so the whole gate set refreshes
+         * over a few frames without a burst. */
+        static uint8_t rr = 0U;
+        uint8_t idx = rr;
+        rr = (uint8_t) ((rr + 1U) % LAP_MAX_GATES);
+
+        const canbc_gate_t *g = &s->gates[idx];
+        float heading_deg = g->heading_rad * (180.0f / 3.14159265358979f);
+        if (heading_deg < 0.0f) {
+            heading_deg += 360.0f;
+        }
+        can_gps_gate_t m = {
+            idx,
+            (uint8_t) (g->valid ? CAN_GPS_GATE_FLAG_VALID : 0U),
+            g->east_m, g->north_m, heading_deg};
+        can_pack_gps_gate(&m, buf);
+        send_frame(CAN_ID_GPS_GATE, buf, CAN_DLC_GPS_GATE);
+        return;
     }
     default:
         return;

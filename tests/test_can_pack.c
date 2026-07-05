@@ -359,6 +359,55 @@ static void test_gps_command_roundtrip(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 0x6BB GPS_Frame_Origin                                              */
+/* ------------------------------------------------------------------ */
+
+static void test_gps_frame_origin_roundtrip(void)
+{
+    can_gps_frame_origin_t in = { .lat_deg = 51.5074000,
+                                   .lon_deg = -0.1278000 };
+    uint8_t buf[8];
+    can_gps_frame_origin_t out;
+
+    CHECK(can_pack_gps_frame_origin(&in, buf) == STATUS_OK, "pack failed");
+    CHECK(can_unpack_gps_frame_origin(buf, &out) == STATUS_OK,
+          "unpack failed");
+
+    double tol = 1.5e-7; /* 1.5x LSB (1e-7 deg) */
+    CHECK(fabs_d(out.lat_deg - in.lat_deg) <= tol, "lat %.9f vs %.9f",
+          out.lat_deg, in.lat_deg);
+    CHECK(fabs_d(out.lon_deg - in.lon_deg) <= tol, "lon %.9f vs %.9f",
+          out.lon_deg, in.lon_deg);
+}
+
+/* ------------------------------------------------------------------ */
+/* 0x6BC GPS_Gate                                                      */
+/* ------------------------------------------------------------------ */
+
+static void test_gps_gate_roundtrip(void)
+{
+    can_gps_gate_t in = { .index = 3,
+                          .flags = CAN_GPS_GATE_FLAG_VALID,
+                          .east_m = -123.4f,
+                          .north_m = 987.6f,
+                          .heading_deg = 274.3f };
+    uint8_t buf[8];
+    can_gps_gate_t out;
+
+    CHECK(can_pack_gps_gate(&in, buf) == STATUS_OK, "pack failed");
+    CHECK(can_unpack_gps_gate(buf, &out) == STATUS_OK, "unpack failed");
+
+    CHECK(out.index == in.index, "index");
+    CHECK(out.flags == in.flags, "flags");
+    CHECK(fabs_f(out.east_m - in.east_m) <= 0.15f, "east %f vs %f",
+          out.east_m, in.east_m);
+    CHECK(fabs_f(out.north_m - in.north_m) <= 0.15f, "north %f vs %f",
+          out.north_m, in.north_m);
+    CHECK(fabs_f(out.heading_deg - in.heading_deg) <= 0.15f,
+          "heading %f vs %f", out.heading_deg, in.heading_deg);
+}
+
+/* ------------------------------------------------------------------ */
 /* NULL-argument guards (spot check)                                  */
 /* ------------------------------------------------------------------ */
 
@@ -393,6 +442,8 @@ int main(void)
     test_gps_status_roundtrip();
     test_gps_mag_roundtrip();
     test_gps_command_roundtrip();
+    test_gps_frame_origin_roundtrip();
+    test_gps_gate_roundtrip();
     test_null_args();
 
     if (g_failures == 0) {

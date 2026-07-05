@@ -2,20 +2,19 @@
  * @file    flash_store.c
  * @brief   Append-only gate/mag-cal persistence (see flash_store.h).
  *
- * Known simplification: only gate *sets* are persisted, not clears - a
- * CAN_CMD_GATE_CLEAR takes effect immediately in RAM (gates.c) but isn't
- * written to flash, so a power cycle after clearing a gate (without
- * setting a new one over it) would restore the old one. Acceptable for
- * now since the common sequence is clear-then-set-new, which does
- * persist correctly; a dedicated CLEAR record kind is the natural fix
- * if bench use shows the gap matters.
+ * Gates are stored as ABSOLUTE lat/lon (i32 1e-7 deg) plus a per-slot
+ * valid flag, so they reproduce across a power cycle even though the ENU
+ * origin lands somewhere different each boot. Both sets and clears are
+ * persisted: a cleared slot writes a valid=0 marker, and the "wipe
+ * everything" gestures (clear-all button, or the sector wipe implied by
+ * setting a new start/finish) write a KIND_GATE_CLEAR_ALL record.
+ * Superseded history is reclaimed by flash_store_erase_and_compact(),
+ * which rewrites only the latest still-valid gate per slot.
  */
 
 #include "persist/flash_store.h"
 
 #include <string.h>
-
-#include "laptimer/gates.h"
 
 static uint32_t
 crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
@@ -38,16 +37,48 @@ record_crc(const flash_store_record_t *rec)
                          (uint32_t) (sizeof(*rec) - sizeof(rec->crc)));
 }
 
+/* Gate payload lives in the record's `payload` bytes as
+ * [i32 lat_1e7][i32 lon_1e7][f32 heading] - written scalar-by-scalar
+ * (not via a struct memcpy) so no struct padding leaks indeterminate
+ * bytes into the CRC. */
+static void
+gate_payload_write(flash_store_record_t *out, int32_t lat_1e7,
+                   int32_t lon_1e7, float heading_rad)
+{
+    uint8_t *pb = (uint8_t *) out->payload;
+    memcpy(pb + 0, &lat_1e7, sizeof lat_1e7);
+    memcpy(pb + 4, &lon_1e7, sizeof lon_1e7);
+    memcpy(pb + 8, &heading_rad, sizeof heading_rad);
+}
+
+static void
+gate_payload_read(const flash_store_record_t *rec, int32_t *lat_1e7,
+                  int32_t *lon_1e7, float *heading_rad)
+{
+    const uint8_t *pb = (const uint8_t *) rec->payload;
+    memcpy(lat_1e7, pb + 0, sizeof *lat_1e7);
+    memcpy(lon_1e7, pb + 4, sizeof *lon_1e7);
+    memcpy(heading_rad, pb + 8, sizeof *heading_rad);
+}
+
 void
-flash_store_build_gate_record(uint8_t index, float east_m, float north_m,
-                               float heading_rad, flash_store_record_t *out)
+flash_store_build_gate_record(uint8_t index, int32_t lat_1e7,
+                               int32_t lon_1e7, float heading_rad,
+                               bool valid, flash_store_record_t *out)
 {
     memset(out, 0, sizeof(*out));
     out->kind = FLASH_STORE_KIND_GATE;
     out->key = index;
-    out->payload[0] = east_m;
-    out->payload[1] = north_m;
-    out->payload[2] = heading_rad;
+    out->gate_valid = valid ? 1U : 0U;
+    gate_payload_write(out, lat_1e7, lon_1e7, heading_rad);
+    out->crc = record_crc(out);
+}
+
+void
+flash_store_build_gate_clear_all_record(flash_store_record_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->kind = FLASH_STORE_KIND_GATE_CLEAR_ALL;
     out->crc = record_crc(out);
 }
 
@@ -90,16 +121,16 @@ flash_store_record_is_valid(const flash_store_record_t *rec)
 
 bool
 flash_store_decode_gate(const flash_store_record_t *rec, uint8_t *index,
-                         float *east_m, float *north_m, float *heading_rad)
+                         int32_t *lat_1e7, int32_t *lon_1e7,
+                         float *heading_rad, bool *valid)
 {
     if (!flash_store_record_is_valid(rec) ||
         rec->kind != FLASH_STORE_KIND_GATE) {
         return false;
     }
     *index = rec->key;
-    *east_m = rec->payload[0];
-    *north_m = rec->payload[1];
-    *heading_rad = rec->payload[2];
+    *valid = (rec->gate_valid != 0U);
+    gate_payload_read(rec, lat_1e7, lon_1e7, heading_rad);
     return true;
 }
 
@@ -135,14 +166,15 @@ flash_store_find_next_slot(const uint8_t *page, uint32_t page_size)
 
 void
 flash_store_restore(const uint8_t *page, uint32_t page_size,
+                     flash_store_gate_t *gates_out, uint32_t gates_max,
                      mag_cal_result_t *mag_cal_out)
 {
-    bool have_gate[FLASH_STORE_MAX_RECORDS] = {false};
-    float gate_east[FLASH_STORE_MAX_RECORDS];
-    float gate_north[FLASH_STORE_MAX_RECORDS];
-    float gate_heading[FLASH_STORE_MAX_RECORDS];
     bool have_mag_cal = false;
     mag_cal_result_t mag_cal; /* only read after have_mag_cal is set true */
+
+    for (uint32_t i = 0U; i < gates_max; i++) {
+        gates_out[i].valid = false;
+    }
 
     uint32_t offset = 0U;
     while (offset + FLASH_STORE_RECORD_SIZE <= page_size) {
@@ -150,28 +182,32 @@ flash_store_restore(const uint8_t *page, uint32_t page_size,
             (const flash_store_record_t *) &page[offset];
 
         uint8_t index;
-        float e, n, h;
+        int32_t lat_1e7, lon_1e7;
+        float h;
+        bool valid;
         mag_cal_result_t cal;
 
-        if (flash_store_decode_gate(rec, &index, &e, &n, &h) &&
-            index < FLASH_STORE_MAX_RECORDS) {
-            have_gate[index] = true;
-            gate_east[index] = e;
-            gate_north[index] = n;
-            gate_heading[index] = h;
+        if (flash_store_decode_gate(rec, &index, &lat_1e7, &lon_1e7, &h,
+                                     &valid)) {
+            /* Append-order = newest-wins per slot, including a clear
+             * (valid=false) superseding an earlier set. */
+            if (index < gates_max) {
+                gates_out[index].lat_1e7 = lat_1e7;
+                gates_out[index].lon_1e7 = lon_1e7;
+                gates_out[index].heading_rad = h;
+                gates_out[index].valid = valid;
+            }
+        } else if (flash_store_record_is_valid(rec) &&
+                   rec->kind == FLASH_STORE_KIND_GATE_CLEAR_ALL) {
+            for (uint32_t i = 0U; i < gates_max; i++) {
+                gates_out[i].valid = false;
+            }
         } else if (flash_store_decode_mag_cal(rec, &cal)) {
             have_mag_cal = true;
             mag_cal = cal;
         }
 
         offset += FLASH_STORE_RECORD_SIZE;
-    }
-
-    for (uint32_t i = 0U; i < FLASH_STORE_MAX_RECORDS; i++) {
-        if (have_gate[i]) {
-            gates_set((uint8_t) i, gate_east[i], gate_north[i],
-                      gate_heading[i]);
-        }
     }
 
     if (have_mag_cal) {
@@ -246,19 +282,39 @@ flash_store_append(const flash_store_record_t *rec)
 }
 
 void
-flash_store_init(mag_cal_result_t *mag_cal_out)
+flash_store_init(flash_store_gate_t *gates_out, uint32_t gates_max,
+                 mag_cal_result_t *mag_cal_out)
 {
     flash_store_restore((const uint8_t *) FLASH_STORE_PAGE_ADDR,
-                         FLASH_STORE_PAGE_SIZE, mag_cal_out);
+                         FLASH_STORE_PAGE_SIZE, gates_out, gates_max,
+                         mag_cal_out);
 }
 
 status_t
-flash_store_save_gate(uint8_t index, float east_m, float north_m,
+flash_store_save_gate(uint8_t index, int32_t lat_1e7, int32_t lon_1e7,
                        float heading_rad)
 {
     flash_store_record_t rec;
-    flash_store_build_gate_record(index, east_m, north_m, heading_rad,
-                                   &rec);
+    flash_store_build_gate_record(index, lat_1e7, lon_1e7, heading_rad,
+                                   true, &rec);
+    return flash_store_append(&rec);
+}
+
+status_t
+flash_store_save_gate_cleared(uint8_t index)
+{
+    flash_store_record_t rec;
+    /* A cleared slot: coordinates are don't-care, the valid=false flag is
+     * what restore keys on. */
+    flash_store_build_gate_record(index, 0, 0, 0.0f, false, &rec);
+    return flash_store_append(&rec);
+}
+
+status_t
+flash_store_save_gates_cleared_all(void)
+{
+    flash_store_record_t rec;
+    flash_store_build_gate_clear_all_record(&rec);
     return flash_store_append(&rec);
 }
 
@@ -273,13 +329,18 @@ flash_store_save_mag_cal(const mag_cal_result_t *cal)
 __attribute__((section(".ccmfunc"))) status_t
 flash_store_erase_and_compact(void)
 {
-    /* Snapshot the current (latest-per-key) state before erasing - the
-     * source page is about to be wiped. */
-    flash_store_record_t gate_recs[FLASH_STORE_MAX_RECORDS];
-    bool have_gate[FLASH_STORE_MAX_RECORDS] = {false};
+    /* Replay to the latest state before erasing (the source page is about
+     * to be wiped), then rewrite only the gates that are still valid -
+     * cleared/superseded slots and clear-all markers just vanish, since an
+     * absent record already reads back as "not set". */
+    flash_store_gate_t gates[FLASH_STORE_MAX_GATES];
     uint32_t n_gates = 0U;
     flash_store_record_t mag_cal_rec;
     bool have_mag_cal = false;
+
+    for (uint32_t i = 0U; i < FLASH_STORE_MAX_GATES; i++) {
+        gates[i].valid = false;
+    }
 
     const uint8_t *page = (const uint8_t *) FLASH_STORE_PAGE_ADDR;
     uint32_t offset = 0U;
@@ -287,22 +348,35 @@ flash_store_erase_and_compact(void)
         const flash_store_record_t *rec =
             (const flash_store_record_t *) &page[offset];
         uint8_t index;
-        float e, n, h;
+        int32_t lat_1e7, lon_1e7;
+        float h;
+        bool valid;
         mag_cal_result_t cal;
 
-        if (flash_store_decode_gate(rec, &index, &e, &n, &h) &&
-            index < FLASH_STORE_MAX_RECORDS) {
-            if (!have_gate[index]) {
-                n_gates++;
+        if (flash_store_decode_gate(rec, &index, &lat_1e7, &lon_1e7, &h,
+                                     &valid)) {
+            if (index < FLASH_STORE_MAX_GATES) {
+                gates[index].lat_1e7 = lat_1e7;
+                gates[index].lon_1e7 = lon_1e7;
+                gates[index].heading_rad = h;
+                gates[index].valid = valid;
             }
-            have_gate[index] = true;
-            flash_store_build_gate_record(index, e, n, h,
-                                           &gate_recs[index]);
+        } else if (flash_store_record_is_valid(rec) &&
+                   rec->kind == FLASH_STORE_KIND_GATE_CLEAR_ALL) {
+            for (uint32_t i = 0U; i < FLASH_STORE_MAX_GATES; i++) {
+                gates[i].valid = false;
+            }
         } else if (flash_store_decode_mag_cal(rec, &cal)) {
             have_mag_cal = true;
             flash_store_build_mag_cal_record(&cal, &mag_cal_rec);
         }
         offset += FLASH_STORE_RECORD_SIZE;
+    }
+
+    for (uint32_t i = 0U; i < FLASH_STORE_MAX_GATES; i++) {
+        if (gates[i].valid) {
+            n_gates++;
+        }
     }
 
     if ((n_gates + (have_mag_cal ? 1U : 0U)) * FLASH_STORE_RECORD_SIZE >
@@ -326,9 +400,13 @@ flash_store_erase_and_compact(void)
     }
 
     uint32_t write_offset = 0U;
-    for (uint32_t i = 0U; i < FLASH_STORE_MAX_RECORDS; i++) {
-        if (have_gate[i]) {
-            if (flash_store_program_record(write_offset, &gate_recs[i]) !=
+    for (uint32_t i = 0U; i < FLASH_STORE_MAX_GATES; i++) {
+        if (gates[i].valid) {
+            flash_store_record_t rec;
+            flash_store_build_gate_record((uint8_t) i, gates[i].lat_1e7,
+                                           gates[i].lon_1e7,
+                                           gates[i].heading_rad, true, &rec);
+            if (flash_store_program_record(write_offset, &rec) !=
                 STATUS_OK) {
                 return STATUS_ERROR;
             }

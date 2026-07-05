@@ -128,15 +128,44 @@ comparable to external GPS-timestamped data.
 
 The steering wheel's lap button is a short/long/very-long press FSM:
 short = new segment gate, long (>1 s) = new start/finish line (clears
-segments), very long (>5 s) = clear all gates. Gate *sets* persist across
-power cycles in the last flash page
-([SUFST/Src/persist/flash_store.c](SUFST/Src/persist/flash_store.c)), as
-an append-only, CRC-checked log; the newest record for a given gate wins
-on restore, and the page is only erased-and-compacted when explicitly
-requested (`CAN_CMD_CONFIG_SAVE`) and the car is judged stationary. Gate
-*clears* are not yet persisted (a power cycle after clearing without
-setting a new gate over it would restore the old one) — a known gap, not
-a silent one.
+segments), very long (>5 s) = clear all gates. A gate is planted at the
+car's *current* fused position/heading, so you place one by driving to
+the spot and triggering it (there's no way to type in a coordinate);
+individual sectors can also be set/cleared over CAN
+(`CAN_CMD_GATE_SET`/`GATE_CLEAR` with a slot).
+
+Gates persist across power cycles in the last flash page
+([SUFST/Src/persist/flash_store.c](SUFST/Src/persist/flash_store.c)) as
+an append-only, CRC-checked log, and — crucially — are stored as
+**absolute lat/lon** (i32 1e-7 deg), not the per-boot ENU. The ENU frame
+origin is re-anchored at each power-up's first fix, so an ENU gate would
+land somewhere different next session; storing the absolute coordinate
+and re-projecting it into the new frame at origin time makes gates
+**reproducible across a power-cycle-and-move** — turn the car off, tow it
+to a different paddock, turn it on, and the start/finish and sectors come
+back in the right physical places. Both sets *and* clears persist (a
+cleared slot writes a valid=0 marker; the clear-all / new-start-finish
+wipe writes a clear-all marker), so a reboot never resurrects a gate you
+removed. The newest record per slot wins on restore; the page is only
+erased-and-compacted when explicitly requested (`CAN_CMD_CONFIG_SAVE`)
+and the car is judged stationary.
+
+### Broadcasting the map to the dash
+
+So the in-car dash can draw the track and gates live, the node broadcasts
+two extra messages (slowly, to stay light on the bus): `GPS_Frame_Origin`
+(0x6BB, 1 Hz — the ENU origin as absolute lat/lon, the anchor for
+everything else) and `GPS_Gate` (0x6BC, one slot per frame round-robined,
+~5 Hz aggregate — each gate's ENU position/heading + a valid flag, so a
+cleared gate is broadcast as removed). The *track shape* itself is **not**
+broadcast: the dash already receives the 20 Hz position stream and
+accumulates the outline from it, so a separate polyline would be
+redundant bus load. `tools/dashboard` renders all of this (start/finish
+in green, sectors in yellow, live trail in cyan) and — since gates now
+reproduce — remembers each track's outline locally keyed by its gate
+layout, reloading it on startup so the shape isn't blank until the first
+lap. That desktop tool is the reference for what the physical dash should
+do.
 
 A Formula Student track is ~3 m wide, so gates are deliberately narrower
 than that (2 m half-width) rather than the much wider default an earlier
@@ -323,12 +352,18 @@ needs a bench to confirm," not "done":
 Every driver-level assumption flagged anywhere in this file has now
 been checked against a real source document — nothing left in this
 codebase is "written from memory and unverified."
-- **Known gaps, not silent ones**: gate *clears* aren't persisted to
-  flash (only sets); no host-side SIL (software-in-the-loop) harness
-  exists yet to replay a synthetic or recorded track through the full
-  fusion+timing pipeline and check lap times against ground truth — the
-  per-module unit tests above cover each piece in isolation, not the
+- **Known gaps, not silent ones**: no host-side SIL (software-in-the-loop)
+  harness exists yet to replay a synthetic or recorded track through the
+  full fusion+timing pipeline and check lap times against ground truth —
+  the per-module unit tests above cover each piece in isolation, not the
   integrated behaviour.
+- **Gate persistence is now reproducible across power cycles** (was
+  previously a dead code path — `flash_store_save_gate()` existed but was
+  never called, and even if it had been, gates were stored as per-boot
+  ENU): gates are now saved as absolute lat/lon on every set, clears and
+  clear-all persist too, and they're re-projected into the new frame once
+  the first fix anchors the origin. The node also broadcasts
+  `GPS_Frame_Origin` + `GPS_Gate` so the dash can draw the map.
 - **IMU SPI reads are now DMA-backed** (previously blocking HAL calls):
   [lsm6dso32.c](SUFST/Src/imu/lsm6dso32.c)'s register reads use
   `HAL_SPI_TransmitReceive_DMA` on the SPI1 RX/TX DMA channels (already

@@ -536,3 +536,67 @@ status_t can_unpack_gps_command(const uint8_t in[8],
 
     return STATUS_OK;
 }
+
+/* ------------------------------------------------------------------ */
+/* 0x6BB GPS_Frame_Origin                                              */
+/* ------------------------------------------------------------------ */
+
+status_t can_pack_gps_frame_origin(const can_gps_frame_origin_t *in,
+                                    uint8_t out[8])
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    wr_i32(&out[0], sat_i32(round_d(in->lat_deg * 1e7)));
+    wr_i32(&out[4], sat_i32(round_d(in->lon_deg * 1e7)));
+
+    return STATUS_OK;
+}
+
+status_t can_unpack_gps_frame_origin(const uint8_t in[8],
+                                      can_gps_frame_origin_t *out)
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    out->lat_deg = (double)rd_i32(&in[0]) * 1e-7;
+    out->lon_deg = (double)rd_i32(&in[4]) * 1e-7;
+
+    return STATUS_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* 0x6BC GPS_Gate                                                      */
+/* ------------------------------------------------------------------ */
+
+status_t can_pack_gps_gate(const can_gps_gate_t *in, uint8_t out[8])
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    wr_u8(&out[0], in->index);
+    wr_u8(&out[1], in->flags);
+    wr_i16(&out[2], sat_i16(round_f(in->east_m * 10.0f)));
+    wr_i16(&out[4], sat_i16(round_f(in->north_m * 10.0f)));
+    wr_u16(&out[6], sat_u16(round_f(in->heading_deg * 10.0f)));
+
+    return STATUS_OK;
+}
+
+status_t can_unpack_gps_gate(const uint8_t in[8], can_gps_gate_t *out)
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    out->index = rd_u8(&in[0]);
+    out->flags = rd_u8(&in[1]);
+    out->east_m = (float)rd_i16(&in[2]) * 0.1f;
+    out->north_m = (float)rd_i16(&in[4]) * 0.1f;
+    out->heading_deg = (float)rd_u16(&in[6]) * 0.1f;
+
+    return STATUS_OK;
+}

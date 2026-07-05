@@ -22,6 +22,17 @@ extern "C" {
 
 #include <stdint.h>
 
+#include "board/board_config.h" /* LAP_MAX_GATES */
+
+/* One gate's broadcastable state (ENU, relative to the current frame
+ * origin) for the ~2 Hz GPS_Gate round-robin to the in-car dash. */
+typedef struct {
+    float east_m;
+    float north_m;
+    float heading_rad;
+    uint8_t valid;
+} canbc_gate_t;
+
 typedef struct {
     /* fused position (imu_task, from kf6 + geodesy origin) */
     double lat_deg;
@@ -71,6 +82,15 @@ typedef struct {
     uint8_t gps_retry_count;
     uint8_t imu_retry_count;
     uint8_t cpu_load_pct;
+
+    /* ENU frame origin + lap gates (imu_task) - broadcast slowly so the
+     * in-car dash can draw the start/finish and sector lines. Origin is
+     * absolute lat/lon (i32 1e-7); origin_valid clears until the first
+     * fix anchors the frame. */
+    int32_t origin_lat_1e7;
+    int32_t origin_lon_1e7;
+    uint8_t origin_valid;
+    canbc_gate_t gates[LAP_MAX_GATES];
 } canbc_state_t;
 
 /** @brief Zero the shared state and create its mutex. Call once from
@@ -96,6 +116,15 @@ void canbc_state_set_temp(float mcp9800_temp_c, float imu_temp_c,
 void canbc_state_set_status(uint16_t uptime_s, uint16_t fault_bits,
                              uint8_t gps_retry_count,
                              uint8_t imu_retry_count, uint8_t cpu_load_pct);
+
+/** @brief Publish the ENU frame origin (absolute lat/lon, i32 1e-7 deg)
+ *         so the dash can anchor the broadcast ENU gates. */
+void canbc_state_set_origin(int32_t lat_1e7, int32_t lon_1e7);
+
+/** @brief Publish one gate slot's ENU position/heading (valid=0 marks an
+ *         empty slot, so a cleared gate is broadcast as removed). */
+void canbc_state_set_gate(uint8_t index, float east_m, float north_m,
+                           float heading_rad, uint8_t valid);
 
 /** @brief Copy out a consistent snapshot of every field for the
  *         broadcast task to pack and send without holding the lock

@@ -149,6 +149,31 @@ canbc_state_set_status(uint16_t uptime_s, uint16_t fault_bits,
 }
 
 void
+canbc_state_set_origin(int32_t lat_1e7, int32_t lon_1e7)
+{
+    lock();
+    s_state.origin_lat_1e7 = lat_1e7;
+    s_state.origin_lon_1e7 = lon_1e7;
+    s_state.origin_valid = 1U;
+    unlock();
+}
+
+void
+canbc_state_set_gate(uint8_t index, float east_m, float north_m,
+                     float heading_rad, uint8_t valid)
+{
+    if (index >= LAP_MAX_GATES) {
+        return;
+    }
+    lock();
+    s_state.gates[index].east_m = east_m;
+    s_state.gates[index].north_m = north_m;
+    s_state.gates[index].heading_rad = heading_rad;
+    s_state.gates[index].valid = valid;
+    unlock();
+}
+
+void
 canbc_state_get_snapshot(canbc_state_t *out)
 {
     lock();
