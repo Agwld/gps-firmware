@@ -17,6 +17,7 @@ extern "C" {
 #if !defined(HOST_TEST_BUILD)
 #include <stdint.h>
 extern uint32_t SystemCoreClock;
+#include "fusion/timebase.h"
 #endif
 
 #define configUSE_PREEMPTION                    1
@@ -54,8 +55,19 @@ extern uint32_t SystemCoreClock;
 #define configUSE_MALLOC_FAILED_HOOK            0
 #define configUSE_DAEMON_TASK_STARTUP_HOOK      0
 
-/* Run time and task stats */
+/* Run time and task stats.
+ * Reuses the microsecond tick already free-running on TIM3 for GPS PPS
+ * timing (fusion/timebase.c) as the run-time-stats clock: no dedicated
+ * peripheral needed, and its ~71 min software-extended wrap period
+ * comfortably outlasts a race session. Host test builds never link
+ * FreeRTOS, so this is a no-op there. */
+#if defined(HOST_TEST_BUILD)
 #define configGENERATE_RUN_TIME_STATS           0
+#else
+#define configGENERATE_RUN_TIME_STATS           1
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() ((void) 0)
+#define portGET_RUN_TIME_COUNTER_VALUE()        timebase_get_tick()
+#endif
 #define configUSE_TRACE_FACILITY                0
 #define configUSE_STATS_FORMATTING_FUNCTIONS    0
 

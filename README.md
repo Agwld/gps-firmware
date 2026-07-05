@@ -324,13 +324,21 @@ Every driver-level assumption flagged anywhere in this file has now
 been checked against a real source document — nothing left in this
 codebase is "written from memory and unverified."
 - **Known gaps, not silent ones**: gate *clears* aren't persisted to
-  flash (only sets); CPU load reporting in `GPS_Status` is a placeholder
-  zero (`configGENERATE_RUN_TIME_STATS` isn't wired up); the IMU SPI path
-  is blocking HAL calls rather than the DMA pipeline originally planned;
-  no host-side SIL (software-in-the-loop) harness exists yet to replay a
-  synthetic or recorded track through the full fusion+timing pipeline
-  and check lap times against ground truth — the per-module unit tests
-  above cover each piece in isolation, not the integrated behaviour.
+  flash (only sets); the IMU SPI path is blocking HAL calls rather than
+  the DMA pipeline originally planned; no host-side SIL
+  (software-in-the-loop) harness exists yet to replay a synthetic or
+  recorded track through the full fusion+timing pipeline and check lap
+  times against ground truth — the per-module unit tests above cover
+  each piece in isolation, not the integrated behaviour.
+- **CPU load reporting is now real** (previously a placeholder zero):
+  `configGENERATE_RUN_TIME_STATS` is wired up in
+  [FreeRTOSConfig.h](Core/Inc/FreeRTOSConfig.h) using the microsecond
+  tick TIM3 already free-runs for GPS PPS timing
+  ([timebase.c](SUFST/Src/fusion/timebase.c)) as the run-time-stats
+  clock, rather than dedicating a second timer to it — its ~71 min
+  software-extended wrap period comfortably outlasts a race session.
+  `sys_task.c` reports `100 - ulTaskGetIdleRunTimePercent()` in
+  `GPS_Status.cpu_load_pct`.
 
 Along the way, fixed two pre-existing bugs unrelated to any of the above:
 `tests/CMakeLists.txt` wasn't linking `libm` (broke 3 of the original 7

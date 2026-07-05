@@ -3,10 +3,10 @@
  * @brief   Buttons FSM, LEDs, MCP9800 temperature (sole I2C2 user),
  *          config-save/flash persistence, IWDG, status frame.
  *
- * CPU load reporting is a placeholder (0): configGENERATE_RUN_TIME_STATS
- * is off in FreeRTOSConfig.h, so there's no run-time-stats timer wired up
- * to compute it from yet - a real number needs that enabled plus a
- * portCONFIGURE_TIMER_FOR_RUN_TIME_STATS definition, not fabricated here.
+ * CPU load is 100 minus the idle task's share of run time, per
+ * FreeRTOSConfig.h's configGENERATE_RUN_TIME_STATS wiring (the TIM3
+ * microsecond tick already used for GPS PPS timing, reused as the
+ * run-time-stats clock).
  */
 
 #include "sys/sys_task.h"
@@ -183,8 +183,11 @@ sys_task_main(void *argument)
         }
 
         uptime_ticks += SYS_TASK_PERIOD_MS;
+        uint8_t cpu_load_pct =
+            (uint8_t) (100U - ulTaskGetIdleRunTimePercent());
         canbc_state_set_status((uint16_t) (uptime_ticks / 1000U),
-                                (uint16_t) app_get_events(), 0U, 0U, 0U);
+                                (uint16_t) app_get_events(), 0U, 0U,
+                                cpu_load_pct);
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SYS_TASK_PERIOD_MS));
     }
