@@ -1,13 +1,43 @@
 # STAG 12 GPS dashboard
 
 A PyQt6 desktop app that visualises the GPS node's CAN traffic (decoded
-against `tools/GPS.dbc`): fix/position/attitude status, rolling
-speed/attitude/accel/gyro plots, and a 2D track map.
+against `tools/GPS.dbc`): fix/position/attitude status, lap timing,
+rolling speed/attitude/accel/gyro plots, and a 2D track map with the
+broadcast gates. It can also send commands back to the node.
 
 It can read frames from a live CAN interface, replay a recorded log, or
 generate synthetic traffic - all three go through the same decode/UI
 pipeline, so what you see in simulate mode is what you'll see on the
 bench.
+
+## Gate control (remote steering-wheel buttons)
+
+The **Gate control** panel (bottom-left) mirrors the car's steering-wheel
+lap button, sending `GPS_Command` frames to the node:
+
+- **Set start / finish** - places the start/finish line at the node's
+  current position and clears the sector gates (steering wheel: long
+  press).
+- **Set next sector gate** - places the next sector gate; the slot
+  auto-increments 1→7 and resets when you set a new start/finish or clear
+  all (steering wheel: short press).
+- **Clear all gates** (very long press) and **Save to flash**
+  (`CAN_CMD_CONFIG_SAVE`, which the node only acts on when it judges the
+  car stationary).
+
+The buttons are enabled only while connected. In **Live** mode the frames
+go out on the real bus; in **Simulate** mode they drive the simulated
+node (which plants/clears gates and re-times laps against them), so you
+can rehearse the whole gate-setting workflow with no hardware. Replay is
+read-only, so the buttons do nothing there.
+
+## Lap timing
+
+The Status tab shows the current lap time, sector, last and best lap,
+delta to the session best, and the last segment time - driven by
+`Lap_Status` and the `Lap_Event` frames the node emits on each
+lap/sector crossing. The simulator runs a real gate-crossing timer, so
+these populate in simulate mode too.
 
 ## Setup
 
@@ -35,6 +65,9 @@ Useful flags for scripted/headless verification:
 
 - `--simulate` - start immediately in simulate mode instead of waiting
   for Connect to be clicked.
+- `--sim-lap-period N` - simulate mode seconds per lap (default 20; use a
+  small value to make laps - and the lap-timing readouts - complete
+  sooner during a scripted check).
 - `--run-seconds N` - exit automatically after N seconds.
 - `--screenshot PATH` - save a PNG of the window before exiting (implies
   `--run-seconds 2` if not given explicitly).

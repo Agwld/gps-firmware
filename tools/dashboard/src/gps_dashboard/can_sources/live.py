@@ -50,6 +50,8 @@ class LiveCanSource(CanSource):
         self.channel = channel
         self.bitrate = bitrate
         self.extra_kwargs = extra_kwargs
+        self._bus: can.BusABC | None = None
+        self._bus_lock = threading.Lock()
 
     def frames(self, stop: threading.Event) -> Iterator[RawFrame]:
         bus = can.interface.Bus(
@@ -58,6 +60,8 @@ class LiveCanSource(CanSource):
             bitrate=self.bitrate,
             **self.extra_kwargs,
         )
+        with self._bus_lock:
+            self._bus = bus
         try:
             while not stop.is_set():
                 msg = bus.recv(timeout=0.2)
@@ -69,4 +73,23 @@ class LiveCanSource(CanSource):
                     timestamp=msg.timestamp,
                 )
         finally:
+            with self._bus_lock:
+                self._bus = None
             bus.shutdown()
+
+    def send(self, frame: RawFrame) -> None:
+        """Transmit a frame onto the live bus. Silently dropped if the bus
+        isn't open (not yet connected / already disconnected). python-can
+        Bus.send is thread-safe, but the handle swap on connect/disconnect
+        is guarded so we never touch a half-torn-down bus."""
+        with self._bus_lock:
+            bus = self._bus
+        if bus is None:
+            return
+        bus.send(
+            can.Message(
+                arbitration_id=frame.arbitration_id,
+                data=frame.data,
+                is_extended_id=False,
+            )
+        )

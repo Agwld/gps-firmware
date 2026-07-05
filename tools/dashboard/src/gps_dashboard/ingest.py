@@ -14,6 +14,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from gps_dashboard.can_sources.base import CanSource
 from gps_dashboard.decoder import Decoder
+from gps_dashboard.raw_frame import RawFrame
 from gps_dashboard.recorder import CandumpRecorder
 
 
@@ -59,3 +60,9 @@ class IngestWorker(QThread):
     def stop(self) -> None:
         """Request a prompt, graceful stop (see CanSource.frames)."""
         self._stop_event.set()
+
+    def send(self, raw: RawFrame) -> None:
+        """Forward a frame to the active source for transmission (e.g. a
+        GPS_Command from the control panel). Called from the GUI thread;
+        the source's send() is responsible for thread-safety."""
+        self._source.send(raw)

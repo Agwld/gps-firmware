@@ -25,6 +25,12 @@ def main() -> int:
         "--simulate", action="store_true", help="start immediately in simulate mode"
     )
     parser.add_argument(
+        "--sim-lap-period",
+        type=float,
+        default=20.0,
+        help="simulate mode: seconds per lap (shorter = laps complete sooner)",
+    )
+    parser.add_argument(
         "--run-seconds",
         type=float,
         default=None,
@@ -44,7 +50,9 @@ def main() -> int:
     window.show()
 
     if args.simulate:
-        window._start_ingest(SimulateCanSource(decoder), None)  # noqa: SLF001
+        window._start_ingest(  # noqa: SLF001
+            SimulateCanSource(decoder, lap_period_s=args.sim_lap_period), None
+        )
 
     run_seconds = args.run_seconds
     if args.screenshot and run_seconds is None:

@@ -60,6 +60,8 @@ class StatusPanel(QWidget):
         super().__init__(parent)
         self._unknown_frame_count = 0
         self._fields: dict[str, _Field] = {}
+        #: Best lap time seen this session, for the delta readout.
+        self._best_lap_ms: int | None = None
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_fix_group())
@@ -115,9 +117,13 @@ class StatusPanel(QWidget):
         box, grid = self._group("Lap timing")
         self._field(grid, "lap", 0, 0, "Lap")
         self._field(grid, "sector", 0, 2, "Sector")
-        self._field(grid, "running_time", 1, 0, "Running time")
+        self._field(grid, "running_time", 1, 0, "Current lap")
         self._field(grid, "lap_flags", 1, 2, "Status")
-        self._field(grid, "last_event", 2, 0, "Last event")
+        self._field(grid, "last_lap", 2, 0, "Last lap")
+        self._field(grid, "best_lap", 2, 2, "Best lap")
+        self._field(grid, "delta", 3, 0, "Delta (last-best)")
+        self._field(grid, "last_sector", 3, 2, "Last sector")
+        self._field(grid, "last_event", 4, 0, "Last event")
         return box
 
     def _build_imu_group(self) -> QGroupBox:
@@ -194,9 +200,22 @@ class StatusPanel(QWidget):
         from gps_dashboard.enums import LAP_EVENT_TYPE_NAMES
 
         kind = lookup(LAP_EVENT_TYPE_NAMES, s["type"])
+        event_type = s["type"]
+        time_ms = int(s["time_ms"])
         self._fields["last_event"].set_text(
-            f"{kind}: lap {s['lap']}, {_format_ms(s['time_ms'])}"
+            f"{kind}: lap {s['lap']}, {_format_ms(time_ms)}"
         )
+
+        if event_type == 0:  # CAN_LAP_EVENT_LAP: a completed lap time
+            self._fields["last_lap"].set_text(_format_ms(time_ms))
+            if self._best_lap_ms is None or time_ms < self._best_lap_ms:
+                self._best_lap_ms = time_ms
+            self._fields["best_lap"].set_text(_format_ms(self._best_lap_ms))
+            self._fields["delta"].set_text(
+                _format_delta(time_ms - self._best_lap_ms)
+            )
+        elif event_type == 1:  # CAN_LAP_EVENT_SECTOR: a segment time
+            self._fields["last_sector"].set_text(_format_ms(time_ms))
 
     def _on_gps_imu_accel(self, s: dict) -> None:
         self._fields["accel"].set_text(
@@ -247,3 +266,10 @@ def _format_ms(total_ms: int) -> str:
     total_s, ms = divmod(total_ms, 1000)
     minutes, seconds = divmod(total_s, 60)
     return f"{minutes:02d}:{seconds:02d}.{ms:03d}"
+
+
+def _format_delta(delta_ms: int) -> str:
+    """Signed lap delta vs the session best, in seconds (0.000 = new
+    best)."""
+    sign = "-" if delta_ms < 0 else "+"
+    return f"{sign}{abs(delta_ms) / 1000.0:.3f} s"

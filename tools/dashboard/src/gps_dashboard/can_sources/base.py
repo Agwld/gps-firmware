@@ -27,3 +27,12 @@ class CanSource(abc.ABC):
         files) before returning - including on the exception path.
         """
         raise NotImplementedError
+
+    def send(self, frame: RawFrame) -> None:
+        """Transmit a frame (e.g. a GPS_Command from the dashboard's
+        control panel). No-op by default - a replayed log can't be
+        written back to, and not every source is bidirectional. Live and
+        simulate override this. Safe to call from the GUI thread while
+        frames() runs in the ingest thread.
+        """
+        return None

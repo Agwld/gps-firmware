@@ -18,12 +18,27 @@ from __future__ import annotations
 
 import bisect
 import math
+import queue
 import threading
 from collections.abc import Iterator
 
 from gps_dashboard.can_sources.base import CanSource
 from gps_dashboard.decoder import Decoder
 from gps_dashboard.raw_frame import RawFrame
+
+#: GPS_Command sub-commands the simulator honours (see can_defs.h). Lets a
+#: dashboard control panel drive the simulated node exactly as the
+#: steering-wheel buttons drive the real one.
+_CMD_GATE_SET = 0x01
+_CMD_GATE_CLEAR = 0x02
+_GATE_CLEAR_ALL = 0xFF
+
+#: Lap_Event.type values (see CAN_LAP_EVENT_* in can_defs.h).
+_LAP_EVENT_LAP = 0
+_LAP_EVENT_SECTOR = 1
+
+#: Gate slots (start/finish + 7 sectors), matching LAP_MAX_GATES.
+_MAX_GATE_SLOTS = 8
 
 #: Metres per degree of latitude, and (at the origin latitude) of
 #: longitude - the same flat-earth approximation the firmware's own
@@ -181,19 +196,39 @@ class SimulateCanSource(CanSource):
         self._build_path(wps)
         self._build_speed_profile()
 
-        # Gates sit on the path at fixed lap fractions, taking the path's
-        # own heading there - so their lines lie across the trail.
-        self._gates: list[dict[str, float | int]] = []
+        # Gate slots (0 = start/finish, 1..7 = sectors). Each keeps its
+        # arc-length position `s` for crossing detection plus the ENU
+        # position/heading for the broadcast. Pre-seeded with a default
+        # layout so the demo has a track immediately; the control panel can
+        # then set/clear them at runtime (mirroring the steering wheel).
+        self._gates: list[dict[str, float]] = [
+            {"s": 0.0, "east_m": 0.0, "north_m": 0.0, "heading_deg": 0.0,
+             "valid": 0.0}
+            for _ in range(_MAX_GATE_SLOTS)
+        ]
         for frac, index in _GATE_FRACTIONS:
-            e, n, heading_rad, _, _, _ = self._sample(frac * self._length_m)
-            self._gates.append(
-                {
-                    "index": index,
-                    "east_m": e,
-                    "north_m": n,
-                    "heading_deg": math.degrees(heading_rad) % 360.0,
-                }
-            )
+            self._place_gate(index, frac * self._length_m)
+
+        # GPS_Commands arrive from another thread (the GUI); frames()
+        # drains and applies them in its own thread, so gate/engine state
+        # is only ever touched from one thread.
+        self._cmd_queue: queue.Queue[RawFrame] = queue.Queue()
+
+    def _place_gate(self, slot: int, s: float) -> None:
+        """Set gate `slot` at arc-length `s` on the path, filling its ENU
+        position/heading from the path there."""
+        e, n, heading_rad, _, _, _ = self._sample(s)
+        self._gates[slot] = {
+            "s": s % self._length_m,
+            "east_m": e,
+            "north_m": n,
+            "heading_deg": math.degrees(heading_rad) % 360.0,
+            "valid": 1.0,
+        }
+
+    def send(self, frame: RawFrame) -> None:
+        """Queue a GPS_Command frame for the simulated node to act on."""
+        self._cmd_queue.put(frame)
 
     def _build_path(self, wps: list[tuple[float, float]]) -> None:
         n = len(wps)
@@ -294,11 +329,95 @@ class SimulateCanSource(CanSource):
         n = self._pts[i][1] + frac * (self._pts[i + 1][1] - self._pts[i][1])
         return e, n, self._heading[i], self._kappa[i], self._speed[i], self._along[i]
 
+    # -- gate commands + lap-timing engine ---------------------------------
+
+    def _apply_commands(self, dist_m: float, t: float) -> None:
+        """Drain queued GPS_Commands and apply them to the gate table /
+        timing engine, so the control panel can plant/clear gates exactly
+        like the steering-wheel buttons. Gates are placed at the car's
+        current position (arc-length dist_m), same as the real node uses
+        its current fused position."""
+        while True:
+            try:
+                frame = self._cmd_queue.get_nowait()
+            except queue.Empty:
+                break
+            decoded = self._decoder.decode(frame)
+            if decoded is None or decoded.name != "GPS_Command":
+                continue
+            cmd = int(decoded.signals["cmd"])
+            arg0 = int(decoded.signals["arg0"])
+
+            if cmd == _CMD_GATE_SET and arg0 < _MAX_GATE_SLOTS:
+                self._place_gate(arg0, dist_m)
+                if arg0 == 0:
+                    # A new start/finish wipes the sectors and restarts the
+                    # timing reference here (mirrors gates.c + a clean lap).
+                    for i in range(1, _MAX_GATE_SLOTS):
+                        self._gates[i]["valid"] = 0.0
+                    self._running = True
+                    self._lap_start_t = t
+                    self._sector_start_t = t
+                    self._current_sector = 0
+            elif cmd == _CMD_GATE_CLEAR:
+                if arg0 == _GATE_CLEAR_ALL:
+                    for g in self._gates:
+                        g["valid"] = 0.0
+                    self._running = False
+                elif arg0 < _MAX_GATE_SLOTS:
+                    self._gates[arg0]["valid"] = 0.0
+
+    @staticmethod
+    def _crossed(prev_d: float, cur_d: float, s: float, length: float) -> bool:
+        """True if marching from prev_d to cur_d passed gate arc-length s
+        (works across the lap seam; at most one crossing per tick)."""
+        return math.floor((cur_d - s) / length) > math.floor(
+            (prev_d - s) / length
+        )
+
+    def _update_timing(
+        self, prev_d: float, cur_d: float, t: float
+    ) -> list[tuple[int, int, int]]:
+        """Detect gate crossings between prev_d and cur_d and advance the
+        lap/sector timer. Returns (type, lap, time_ms) tuples for any
+        Lap_Events to broadcast this tick."""
+        events: list[tuple[int, int, int]] = []
+        if cur_d <= prev_d:
+            return events
+        length = self._length_m
+
+        # Sectors first: a start/finish crossing in the same tick then
+        # resets the sector counter below.
+        for slot in range(1, _MAX_GATE_SLOTS):
+            g = self._gates[slot]
+            if (
+                g["valid"]
+                and self._running
+                and self._crossed(prev_d, cur_d, g["s"], length)
+            ):
+                sector_ms = int((t - self._sector_start_t) * 1000.0)
+                self._sector_start_t = t
+                self._current_sector += 1
+                events.append((_LAP_EVENT_SECTOR, self._lap_count, sector_ms))
+
+        g0 = self._gates[0]
+        if g0["valid"] and self._crossed(prev_d, cur_d, g0["s"], length):
+            if self._running:
+                lap_ms = int((t - self._lap_start_t) * 1000.0)
+                self._lap_count += 1
+                events.append((_LAP_EVENT_LAP, self._lap_count, lap_ms))
+            self._running = True
+            self._lap_start_t = t
+            self._sector_start_t = t
+            self._current_sector = 0
+
+        return events
+
     def frames(self, stop: threading.Event) -> Iterator[RawFrame]:
         t = 0.0
-        lap = 0
-        lap_start_t = 0.0
         counters = {name: 0 for name, _ in _MESSAGE_RATES}
+        lap_event_counter = 0
+        gate_rr = 0  # round-robin index for the GPS_Gate broadcast
         # Per-message "next due" time, staggered slightly so not every
         # message fires on the very first tick at once.
         next_due = {
@@ -306,9 +425,19 @@ class SimulateCanSource(CanSource):
             for i, (name, rate) in enumerate(_MESSAGE_RATES)
         }
 
+        # Lap-timing engine state. Seeded "running" from the start line at
+        # t=0 (the car begins on the default start/finish), so the first
+        # completed lap reports a real time after one lap rather than two.
+        self._running = True
+        self._lap_count = 0
+        self._current_sector = 0
+        self._lap_start_t = 0.0
+        self._sector_start_t = 0.0
+
         # March by arc length at the profiled (variable) speed, so the car
         # slows for corners and accelerates on the straights.
         dist_m = 0.0
+        prev_dist = 0.0
 
         while not stop.is_set():
             east_m, north_m, heading_rad, kappa, speed_mps, along_mps2 = (
@@ -329,11 +458,15 @@ class SimulateCanSource(CanSource):
             longitudinal_g = along_mps2 / 9.81
             yaw_rate_dps = math.degrees(speed_mps * kappa)
 
-            new_lap = int(dist_m / self._length_m)
-            if new_lap != lap:
-                lap = new_lap
-                lap_start_t = t
-            running_time_ms = int((t - lap_start_t) * 1000.0)
+            # Detect gate crossings (against the gates as they stand this
+            # tick), then apply any control-panel commands so a just-placed
+            # gate isn't instantly "crossed".
+            lap_events = self._update_timing(prev_dist, dist_m, t)
+            self._apply_commands(dist_m, t)
+
+            running_time_ms = (
+                int((t - self._lap_start_t) * 1000.0) if self._running else 0
+            )
 
             for name, rate in _MESSAGE_RATES:
                 if t + 1e-9 < next_due[name]:
@@ -347,14 +480,24 @@ class SimulateCanSource(CanSource):
                         "origin_lon_deg": self._origin_lon,
                     }
                 elif name == "GPS_Gate":
-                    # Round-robin one gate slot per fire.
-                    g = self._gates[counters[name] % len(self._gates)]
+                    # Round-robin one slot per fire, over all 8 slots so the
+                    # dash learns which are empty (valid=0) too.
+                    g = self._gates[gate_rr]
+                    slot = gate_rr
+                    gate_rr = (gate_rr + 1) % _MAX_GATE_SLOTS
                     signals = {
-                        "gate_index": g["index"],
-                        "gate_flags": 0x01,  # bit0 = valid
+                        "gate_index": slot,
+                        "gate_flags": 0x01 if g["valid"] else 0x00,
                         "gate_east_m": g["east_m"],
                         "gate_north_m": g["north_m"],
                         "gate_heading_deg": g["heading_deg"],
+                    }
+                elif name == "Lap_Status":
+                    signals = {
+                        "lap": self._lap_count,
+                        "running_time_ms": running_time_ms,
+                        "sector": self._current_sector,
+                        "flags": 0x01 if self._running else 0x00,
                     }
                 else:
                     signals = self._build_signals(
@@ -366,12 +509,24 @@ class SimulateCanSource(CanSource):
                         lateral_g=lateral_g,
                         longitudinal_g=longitudinal_g,
                         yaw_rate_dps=yaw_rate_dps,
-                        lap=lap,
-                        running_time_ms=running_time_ms,
                         counter=counters[name],
                     )
                 yield self._decoder.encode(name, signals)
 
+            # Lap/sector events fire on crossing, not on a fixed rate.
+            for ev_type, ev_lap, ev_ms in lap_events:
+                lap_event_counter = (lap_event_counter + 1) % 256
+                yield self._decoder.encode(
+                    "Lap_Event",
+                    {
+                        "type": ev_type,
+                        "lap": ev_lap,
+                        "time_ms": ev_ms,
+                        "counter": lap_event_counter,
+                    },
+                )
+
+            prev_dist = dist_m
             dist_m += speed_mps * _TICK_DT
             t += _TICK_DT
             stop.wait(_TICK_DT)
@@ -387,8 +542,6 @@ class SimulateCanSource(CanSource):
         lateral_g: float,
         longitudinal_g: float,
         yaw_rate_dps: float,
-        lap: int,
-        running_time_ms: int,
         counter: int,
     ) -> dict[str, float | int]:
         if name == "GPS_Position":
@@ -409,13 +562,6 @@ class SimulateCanSource(CanSource):
                 "roll_deg": 0.0,
                 "fusion_status": 0,
                 "counter": counter,
-            }
-        if name == "Lap_Status":
-            return {
-                "lap": lap,
-                "running_time_ms": running_time_ms,
-                "sector": 0,
-                "flags": 0x01,  # bit0: running
             }
         if name == "GPS_Quality":
             return {"hacc_mm": 15.0, "sacc_mm_s": 20.0, "pdop": 1.2, "flags": 0x01}
