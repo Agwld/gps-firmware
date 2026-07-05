@@ -9,8 +9,6 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 | Spec | Value |
 |------|-------|
 | PCB size | 65 mm × 85 mm, 4 layers |
-| Mounting | M3 corner holes (standard SUFST template) |
-| Form factor | 2/3 height ATX (fits SUFST enclosure) |
 | **Main connectors** | — |
 | CAN | Molex Micro-Fit 3.0, 2-pin (CAN-H, CAN-L) |
 | RS232 | DB-9 female (RS232/MAX3232, MoTeC datalogger) |
