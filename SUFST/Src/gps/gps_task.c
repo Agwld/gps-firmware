@@ -56,6 +56,19 @@ handle_nav_pvt(const ubx_nav_pvt_t *pvt)
 
     canbc_state_set_quality(hacc_mm, sacc_mm_s, pdop, quality_flags);
 
+    /* Publish GPS time even without a position fix - the receiver can
+     * resolve time from fewer satellites than a fix needs, and the
+     * validity flags tell consumers how much to trust it. */
+    uint8_t time_flags = 0U;
+    if (pvt->valid & UBX_PVT_VALID_TIME) {
+        time_flags |= CAN_GPS_TIME_FLAG_UTC_VALID;
+    }
+    if (pvt->valid & UBX_PVT_VALID_FULLY_RESOLVED) {
+        time_flags |= CAN_GPS_TIME_FLAG_FULLY_RESOLVED;
+    }
+    canbc_state_set_time(pvt->itow_ms, pvt->hour, pvt->min, pvt->sec,
+                          time_flags);
+
     if (fix_ok) {
         app_set_events(SYS_EVT_GPS_READY);
     }

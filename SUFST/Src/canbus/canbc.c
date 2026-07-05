@@ -112,6 +112,19 @@ canbc_state_set_quality(float hacc_mm, float sacc_mm_s, float pdop,
 }
 
 void
+canbc_state_set_time(uint32_t itow_ms, uint8_t utc_hour, uint8_t utc_min,
+                      uint8_t utc_sec, uint8_t time_flags)
+{
+    lock();
+    s_state.itow_ms = itow_ms;
+    s_state.utc_hour = utc_hour;
+    s_state.utc_min = utc_min;
+    s_state.utc_sec = utc_sec;
+    s_state.time_flags = time_flags;
+    unlock();
+}
+
+void
 canbc_state_set_lap(uint16_t lap, uint32_t running_time_ms, uint8_t sector,
                      uint8_t lap_flags)
 {

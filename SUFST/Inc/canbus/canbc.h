@@ -65,6 +65,13 @@ typedef struct {
     float pdop;
     uint8_t quality_flags;
 
+    /* GPS time-of-week + UTC clock (gps_task) */
+    uint32_t itow_ms;
+    uint8_t utc_hour;
+    uint8_t utc_min;
+    uint8_t utc_sec;
+    uint8_t time_flags;
+
     /* lap timing (imu_task, from laptimer.c) */
     uint16_t lap;
     uint32_t running_time_ms;
@@ -109,6 +116,9 @@ void canbc_state_set_mag(float mx_ut, float my_ut, float mz_ut,
                           uint8_t cal_status);
 void canbc_state_set_quality(float hacc_mm, float sacc_mm_s, float pdop,
                               uint8_t quality_flags);
+void canbc_state_set_time(uint32_t itow_ms, uint8_t utc_hour,
+                           uint8_t utc_min, uint8_t utc_sec,
+                           uint8_t time_flags);
 void canbc_state_set_lap(uint16_t lap, uint32_t running_time_ms,
                           uint8_t sector, uint8_t lap_flags);
 void canbc_state_set_temp(float mcp9800_temp_c, float imu_temp_c,

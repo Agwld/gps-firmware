@@ -67,6 +67,7 @@ enum {
     ROTA_GPS_MAG,
     ROTA_GPS_FRAME_ORIGIN,
     ROTA_GPS_GATE,
+    ROTA_GPS_TIME,
     ROTA_COUNT,
 };
 
@@ -88,6 +89,10 @@ static const canbc_rota_entry_t s_rota[ROTA_COUNT] = {
     [ROTA_GPS_FRAME_ORIGIN] =
         {CAN_ID_GPS_FRAME_ORIGIN, CAN_DLC_GPS_FRAME_ORIGIN, 100, 9},
     [ROTA_GPS_GATE] = {CAN_ID_GPS_GATE, CAN_DLC_GPS_GATE, 20, 3},
+    /* Always broadcast (even before time lock) - the validity flags make
+     * an unsynced frame self-describing, and consumers get a liveness
+     * signal either way. */
+    [ROTA_GPS_TIME] = {CAN_ID_GPS_TIME, CAN_DLC_GPS_TIME, 100, 71},
 };
 
 static status_t
@@ -222,6 +227,12 @@ send_rota_entry(uint32_t which, const canbc_state_t *s)
         can_pack_gps_gate(&m, buf);
         send_frame(CAN_ID_GPS_GATE, buf, CAN_DLC_GPS_GATE);
         return;
+    }
+    case ROTA_GPS_TIME: {
+        can_gps_time_t m = {s->itow_ms, s->utc_hour, s->utc_min,
+                             s->utc_sec, s->time_flags};
+        can_pack_gps_time(&m, buf);
+        break;
     }
     default:
         return;

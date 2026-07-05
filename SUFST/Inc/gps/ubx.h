@@ -112,6 +112,11 @@ typedef struct {
 #define UBX_TM2_FLAG_NEW_RISING  (1U << 7)
 #define UBX_TM2_FLAG_NEW_FALLING (1U << 2)
 
+/* ubx_nav_pvt_t.valid bits */
+#define UBX_PVT_VALID_DATE           (1U << 0)
+#define UBX_PVT_VALID_TIME           (1U << 1)
+#define UBX_PVT_VALID_FULLY_RESOLVED (1U << 2)
+
 typedef struct {
     uint8_t acked_cls;
     uint8_t acked_id;

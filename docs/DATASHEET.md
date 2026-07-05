@@ -173,6 +173,9 @@ All little-endian Intel-style packing per SUFST convention. See [tools/GPS.dbc](
 | 0x6BA | GPS_Mag | 100 ms (10 Hz) | mag_x_mgauss, mag_y_mgauss, mag_z_mgauss, cal_status | 8 |
 | 0x6BB | GPS_Frame_Origin | 1000 ms (1 Hz) | origin_lat_deg, origin_lon_deg, origin_valid | 8 |
 | 0x6BC | GPS_Gate | ~200 ms (5 Hz agg) | gate_index, gate_flags, east_m, north_m, heading_deg | 8 |
+| 0x6BD | GPS_Time | 1000 ms (1 Hz) | itow_ms, utc_hour, utc_min, utc_sec, time_flags | 8 |
+
+`GPS_Time` is the bus-wide time reference: `itow_ms` is GPS time-of-week in the same time domain as `Lap_Event` timestamps (for aligning other nodes' data), and the UTC fields drive a human-readable clock. UTC date is not broadcast (the MoTeC datalogger receives it via NMEA RMC). Note GPS time leads UTC by the current leap-second count, so the two fields are not redundant.
 
 #### RX messages (commands to node)
 
@@ -206,6 +209,8 @@ Command codes (in GPS_Command.cmd_id):
 | gate_east/north_m | int16_t | 0.1 | 0 | ±3276.7 m |
 | gate_heading_deg | uint16_t | 0.1 | 0 | 0–6553.5° |
 | cpu_load_pct | uint8_t | 1 | 0 | 0–100 % |
+| itow_ms | uint32_t | 1 | 0 | 0–604,799,999 ms |
+| utc_hour/min/sec | uint8_t | 1 | 0 | 0–23 / 0–59 / 0–60 |
 
 ### Flash storage
 
@@ -233,7 +238,7 @@ Clear marker: kind=GATE_CLEAR_ALL wipes all gates
 | **Core timing** | ✓ Complete | Gate crossing detection, lap/sector times |
 | **Sensor fusion** | ✓ Complete | Mahony AHRS + 6-state Kalman filter |
 | **Gate persistence** | ✓ Complete | Absolute lat/lon, survives power-cycle-and-move |
-| **CAN broadcast** | ✓ Complete | 14 message types, 20 Hz to 100 Hz sampling |
+| **CAN broadcast** | ✓ Complete | 15 message types, 1 Hz to 100 Hz sampling |
 | **Magnetic calibration** | ✓ Complete | Hard-iron + soft-iron correction |
 | **NMEA synthesis** | ✓ Complete | MoTeC datalogger compatibility |
 | **Event time-marking** | ✓ Complete | GPS TIM-TM2 for button edge stamping |

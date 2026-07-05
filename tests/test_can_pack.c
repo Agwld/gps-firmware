@@ -408,6 +408,38 @@ static void test_gps_gate_roundtrip(void)
 }
 
 /* ------------------------------------------------------------------ */
+
+static void test_gps_time_roundtrip(void)
+{
+    /* Wed 14:32:41 GPS into the week; UTC trails by 18 leap seconds. */
+    can_gps_time_t in = { .itow_ms = 311561000U + 123U,
+                          .utc_hour = 14,
+                          .utc_min = 32,
+                          .utc_sec = 23,
+                          .flags = CAN_GPS_TIME_FLAG_UTC_VALID |
+                                   CAN_GPS_TIME_FLAG_FULLY_RESOLVED };
+    uint8_t buf[8];
+    can_gps_time_t out;
+
+    CHECK(can_pack_gps_time(&in, buf) == STATUS_OK, "pack failed");
+    CHECK(can_unpack_gps_time(buf, &out) == STATUS_OK, "unpack failed");
+
+    CHECK(out.itow_ms == in.itow_ms, "itow %u vs %u", out.itow_ms,
+          in.itow_ms);
+    CHECK(out.utc_hour == in.utc_hour, "hour");
+    CHECK(out.utc_min == in.utc_min, "min");
+    CHECK(out.utc_sec == in.utc_sec, "sec");
+    CHECK(out.flags == in.flags, "flags");
+
+    /* Byte layout against the DBC: itow_ms 0|32, hour 32|8, min 40|8,
+     * sec 48|8, flags 56|8, all little-endian. */
+    CHECK(buf[0] == (uint8_t) (in.itow_ms & 0xFFU), "itow byte 0");
+    CHECK(buf[3] == (uint8_t) (in.itow_ms >> 24), "itow byte 3");
+    CHECK(buf[4] == in.utc_hour, "hour byte");
+    CHECK(buf[7] == in.flags, "flags byte");
+}
+
+/* ------------------------------------------------------------------ */
 /* NULL-argument guards (spot check)                                  */
 /* ------------------------------------------------------------------ */
 
@@ -444,6 +476,7 @@ int main(void)
     test_gps_command_roundtrip();
     test_gps_frame_origin_roundtrip();
     test_gps_gate_roundtrip();
+    test_gps_time_roundtrip();
     test_null_args();
 
     if (g_failures == 0) {

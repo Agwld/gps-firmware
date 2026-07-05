@@ -112,6 +112,13 @@ BO_ 1724 GPS_Gate: 8 GPS_NODE
  SG_ gate_north_m : 32|16@1- (0.1,0) [-3276.8|3276.7] "m" DASH
  SG_ gate_heading_deg : 48|16@1+ (0.1,0) [0|6553.5] "deg" DASH
 
+BO_ 1725 GPS_Time: 8 GPS_NODE
+ SG_ itow_ms : 0|32@1+ (1,0) [0|604799999] "ms" DASH
+ SG_ utc_hour : 32|8@1+ (1,0) [0|23] "h" DASH
+ SG_ utc_min : 40|8@1+ (1,0) [0|59] "min" DASH
+ SG_ utc_sec : 48|8@1+ (1,0) [0|60] "s" DASH
+ SG_ time_flags : 56|8@1+ (1,0) [0|255] "" DASH
+
 BO_ 1727 GPS_Command: 3 DASH
  SG_ cmd : 0|8@1+ (1,0) [0|255] "" GPS_NODE
  SG_ arg0 : 8|8@1+ (1,0) [0|255] "" GPS_NODE
@@ -136,5 +143,7 @@ CM_ BO_ 1723 "1 Hz ENU frame origin (absolute lat/lon). The gates and the node's
 CM_ BO_ 1724 "Lap gate, one slot per frame round-robined (~5 Hz aggregate, whole set in ~1.6 s). Position is ENU metres relative to GPS_Frame_Origin. index 0 = start/finish, 1-7 = sectors; gate_flags bit0 = valid (0 => empty/cleared slot).";
 CM_ SG_ 1724 gate_index "Which gate slot this frame carries (plain data field, not a multiplexor).";
 CM_ SG_ 1724 gate_flags "bit0 = valid; a cleared slot is broadcast with valid=0 so the dash removes it.";
+CM_ BO_ 1725 "1 Hz GPS time reference for other nodes: iTOW (same time domain as Lap_Event TM2 marks) plus UTC wall clock. UTC date is not carried (the MoTeC gets it via NMEA RMC); note GPS time leads UTC by the leap-second count, so UTC h/m/s is not simply iTOW mod 1 day.";
+CM_ SG_ 1725 time_flags "bit0 = UTC time valid (NAV-PVT validTime), bit1 = fully resolved (no sub-second ambiguity).";
 CM_ BO_ 1727 "RX only: host/dash sends commands to the GPS node. byte0=cmd, byte1=arg0, byte2=arg1; see CAN_CMD_* in can_defs.h.";
 CM_ SG_ 1727 cmd "0x01 GATE_SET (arg0=slot), 0x02 GATE_CLEAR (arg0=slot,0xFF=all), 0x10 MAG_CAL_START, 0x11 MAG_CAL_STOP, 0x20 CONFIG_SAVE, 0x30 NMEA_CFG (arg0=rate Hz, arg1=enable).";

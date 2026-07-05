@@ -227,6 +227,7 @@ The `can_task` runs at ~100 Hz (every 10.4 ms) and broadcasts staggered periodic
 | 0x6BA | GPS_Mag | 10 Hz | magnetometer + calibration status |
 | 0x6BB | GPS_Frame_Origin | 1 Hz | ENU origin as absolute lat/lon |
 | 0x6BC | GPS_Gate | round-robin ~5 Hz | one gate per frame (index, east_m, north_m, heading_deg, valid) |
+| 0x6BD | GPS_Time | 1 Hz | GPS iTOW + UTC wall clock + validity flags (bus-wide time reference) |
 | 0x6BF | GPS_Command | RX | gate set/clear, mag-cal, config commands |
 
 ### Signal scaling and precision

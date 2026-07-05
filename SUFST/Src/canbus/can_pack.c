@@ -600,3 +600,37 @@ status_t can_unpack_gps_gate(const uint8_t in[8], can_gps_gate_t *out)
 
     return STATUS_OK;
 }
+
+/* ------------------------------------------------------------------ */
+/* 0x6BD GPS_Time                                                      */
+/* ------------------------------------------------------------------ */
+
+status_t can_pack_gps_time(const can_gps_time_t *in, uint8_t out[8])
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    wr_u32(&out[0], in->itow_ms);
+    wr_u8(&out[4], in->utc_hour);
+    wr_u8(&out[5], in->utc_min);
+    wr_u8(&out[6], in->utc_sec);
+    wr_u8(&out[7], in->flags);
+
+    return STATUS_OK;
+}
+
+status_t can_unpack_gps_time(const uint8_t in[8], can_gps_time_t *out)
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    out->itow_ms = rd_u32(&in[0]);
+    out->utc_hour = rd_u8(&in[4]);
+    out->utc_min = rd_u8(&in[5]);
+    out->utc_sec = rd_u8(&in[6]);
+    out->flags = rd_u8(&in[7]);
+
+    return STATUS_OK;
+}

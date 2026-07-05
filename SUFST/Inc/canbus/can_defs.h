@@ -42,6 +42,7 @@ extern "C" {
 #define CAN_ID_GPS_MAG       0x6BAU /* 10 Hz */
 #define CAN_ID_GPS_FRAME_ORIGIN 0x6BBU /* 1 Hz - ENU origin lat/lon */
 #define CAN_ID_GPS_GATE      0x6BCU /* ~5 Hz aggregate, round-robin per slot */
+#define CAN_ID_GPS_TIME      0x6BDU /* 1 Hz - GPS iTOW + UTC clock */
 #define CAN_ID_GPS_COMMAND   0x6BFU /* RX, event */
 
 /* Frame lengths (bytes) - match tools/GPS.dbc `BO_` length fields */
@@ -58,6 +59,7 @@ extern "C" {
 #define CAN_DLC_GPS_MAG       7U
 #define CAN_DLC_GPS_FRAME_ORIGIN 8U
 #define CAN_DLC_GPS_GATE      8U
+#define CAN_DLC_GPS_TIME      8U
 #define CAN_DLC_GPS_COMMAND   3U
 
 /* ------------------------------------------------------------------ */
@@ -212,6 +214,24 @@ typedef struct {
 
 #define CAN_GPS_GATE_FLAG_VALID (1U << 0)
 
+/* 0x6BD GPS_Time - GPS time of week + UTC wall clock, so other nodes can
+ * timestamp their own data in the same time domain as Lap_Event (iTOW)
+ * and drive a human-readable clock. The UTC *date* is deliberately not
+ * carried (8 bytes won't fit it alongside iTOW at full ms precision, and
+ * the MoTeC already receives it via NMEA RMC); note UTC h/m/s is NOT
+ * simply iTOW mod 1 day - GPS time leads UTC by the current leap-second
+ * count, which is exactly why both are broadcast. */
+typedef struct {
+    uint32_t itow_ms;  /* raw as-is, GPS time of week */
+    uint8_t utc_hour;  /* raw as-is, [0, 23] */
+    uint8_t utc_min;   /* raw as-is, [0, 59] */
+    uint8_t utc_sec;   /* raw as-is, [0, 60] (60 during a leap second) */
+    uint8_t flags;     /* CAN_GPS_TIME_FLAG_* validity bits */
+} can_gps_time_t;
+
+#define CAN_GPS_TIME_FLAG_UTC_VALID      (1U << 0) /* NAV-PVT validTime */
+#define CAN_GPS_TIME_FLAG_FULLY_RESOLVED (1U << 1) /* no sub-s ambiguity */
+
 /* 0x6BF GPS_Command (RX) */
 typedef struct {
     uint8_t cmd;  /* CAN_CMD_* */
@@ -278,6 +298,9 @@ status_t can_unpack_gps_frame_origin(const uint8_t in[8],
 
 status_t can_pack_gps_gate(const can_gps_gate_t *in, uint8_t out[8]);
 status_t can_unpack_gps_gate(const uint8_t in[8], can_gps_gate_t *out);
+
+status_t can_pack_gps_time(const can_gps_time_t *in, uint8_t out[8]);
+status_t can_unpack_gps_time(const uint8_t in[8], can_gps_time_t *out);
 
 #ifdef __cplusplus
 }

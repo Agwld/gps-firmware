@@ -9,7 +9,7 @@ The SUFST STAG 12 GPS node is a **standalone sensor module** that transforms raw
 | **Timing accuracy** | ~1 ms (fused 104 Hz state with GPS-time stamping) |
 | **Lap detection** | Automatic gate crossing, steering-wheel programmable (short/long/very-long press) |
 | **Gate persistence** | Stored as absolute lat/lon, reproducible after power-cycle-and-move |
-| **Broadcast** | 20 Hz position/velocity, 50 Hz attitude, 100 Hz IMU, ~5 Hz gates, CAN 1 Mbps |
+| **Broadcast** | 20 Hz position/velocity, 50 Hz attitude, 100 Hz IMU, ~5 Hz gates, 1 Hz GPS/UTC time, CAN 1 Mbps |
 | **GNSS** | u-blox ZED-F9P (GPS + Galileo, 20 Hz) |
 | **IMU** | LSM6DSO32 accel+gyro + IIS2MDC magnetometer, 104 Hz |
 | **Hardware timing** | Steering-wheel button edge-stamped by GPS receiver (nanosecond precision) |

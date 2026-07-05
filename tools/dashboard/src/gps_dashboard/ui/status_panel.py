@@ -94,6 +94,8 @@ class StatusPanel(QWidget):
         self._field(grid, "hacc", 1, 2, "Horiz. accuracy")
         self._field(grid, "sacc", 2, 0, "Speed accuracy")
         self._field(grid, "pdop", 2, 2, "PDOP")
+        self._field(grid, "utc_time", 3, 0, "UTC time")
+        self._field(grid, "itow", 3, 2, "GPS iTOW")
         return box
 
     def _build_position_group(self) -> QGroupBox:
@@ -186,6 +188,16 @@ class StatusPanel(QWidget):
         self._fields["hacc"].set_text(f"{s['hacc_mm']:.0f} mm")
         self._fields["sacc"].set_text(f"{s['sacc_mm_s']:.1f} mm/s")
         self._fields["pdop"].set_text(f"{s['pdop']:.2f}")
+
+    def _on_gps_time(self, s: dict) -> None:
+        text = (
+            f"{int(s['utc_hour']):02d}:{int(s['utc_min']):02d}"
+            f":{int(s['utc_sec']):02d}"
+        )
+        if not int(s["time_flags"]) & 0x01:  # CAN_GPS_TIME_FLAG_UTC_VALID
+            text += " (unsynced)"
+        self._fields["utc_time"].set_text(text)
+        self._fields["itow"].set_text(f"{int(s['itow_ms'])} ms")
 
     def _on_lap_status(self, s: dict) -> None:
         self._fields["lap"].set_text(str(s["lap"]))
