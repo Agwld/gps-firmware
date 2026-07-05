@@ -50,12 +50,16 @@ read_mcp9800_temp_c(void)
     uint8_t reg = MCP9800_REG_TEMP;
     uint8_t data[2];
 
-    if (HAL_I2C_Master_Transmit(&hi2c2, MCP9800_I2C_ADDR, &reg, 1U, 20U) !=
-        HAL_OK) {
-        return 0.0f;
-    }
-    if (HAL_I2C_Master_Receive(&hi2c2, MCP9800_I2C_ADDR, data, 2U, 20U) !=
-        HAL_OK) {
+    /* I2C2 is shared with the F9P's DDC port (gps_i2c.c). */
+    app_i2c_lock();
+    bool ok =
+        (HAL_I2C_Master_Transmit(&hi2c2, MCP9800_I2C_ADDR, &reg, 1U, 20U) ==
+         HAL_OK) &&
+        (HAL_I2C_Master_Receive(&hi2c2, MCP9800_I2C_ADDR, data, 2U, 20U) ==
+         HAL_OK);
+    app_i2c_unlock();
+
+    if (!ok) {
         return 0.0f;
     }
 

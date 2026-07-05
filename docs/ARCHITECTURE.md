@@ -292,11 +292,10 @@ Five tasks run statically allocated, priority-based scheduling:
 ### `aux_task` (priority 1)
 
 - **Rate**: ~1 Hz (or on-demand)
-- **Logic**:
-  1. Synthesize NMEA sentences from latest fused state → USART2 (MoTeC datalogger)
-  2. Forward RTCM corrections from USART2 RX → USART3 TX (to GPS)
-- **Output**: NMEA on RS232 link
+- **Logic**: Synthesize NMEA sentences from latest fused state → USART3 TX (→ MAX3232 → MoTeC datalogger, via solder jumper JP6)
+- **Output**: NMEA on RS232 link at 115200 (USART3's TX shares the baud register with the UBX stream on RX)
 - **Stack**: 1.5 KB
+- Note: RTCM corrections never pass through the MCU — the RS232 input is routed straight to the F9P's UART1 RX in hardware (JP7 bridged 2‑3)
 
 ### `sys_task` (priority 0, lowest)
 
@@ -315,6 +314,7 @@ Five tasks run statically allocated, priority-based scheduling:
 - **`app_event_queue`** — Button/command events from `sys_task`/`can_task` to `imu_task`
 - **`gps_nav_queue`** — GPS fixes from `gps_task` to `imu_task`
 - **`canbc` state** — Mutex-guarded FreeRTOS state (fused position/attitude for `can_task` to broadcast)
+- **I2C2 bus mutex** — arbitrates the shared bus between `gps_task`'s boot config (F9P DDC port) and `sys_task`'s MCP9800 temperature reads
 - **DMA completion semaphore** — `imu_task` blocks waiting for SPI DMA, unblocks on completion
 
 All queues are **static allocation** with FIFO overflow handling (oldest message dropped if full).
@@ -326,10 +326,10 @@ All queues are **static allocation** with FIFO overflow handling (oldest message
 3. **Peripheral drivers** — USART, SPI, CAN, I2C, TIM configured
 4. **Task startup**:
    - `sys_task` — Reads button state, initializes LEDs
-   - `gps_task` — Configures ZED-F9P via UBX-CFG-VALSET (rate, messages, etc.)
+   - `gps_task` — Configures the ZED-F9P via UBX-CFG-VALSET **over I2C** (the board has no MCU→GPS UART path): UART1 baud, UBX-only output, RTCM3X input, 20 Hz rate, constellations, NAV-PVT/TIM-TM2 enables
    - `imu_task` — Initializes LSM6DSO32, Mahony AHRS, KF state
    - `can_task` — Initializes CAN transceiver, schedules first broadcast
-   - `aux_task` — Opens RS232 link to MoTeC
+   - `aux_task` — Starts NMEA synthesis to the MoTeC (USART3 TX)
 5. **Restore state** — `flash_store_init()` loads gates from flash (deferred)
 6. **Scheduler starts** — `vTaskStartScheduler()` begins task switching
 

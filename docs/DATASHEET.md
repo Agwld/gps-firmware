@@ -86,10 +86,20 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 
 | UART | Use | Pins | Baud | Notes |
 |------|-----|------|------|-------|
-| USART3 | GPS (u-blox) | PB10 TX, PB11 RX | 38400 | UBX binary protocol |
-| USART2 | MoTeC datalogger | PA2 TX, PA15 RX | 115200 | NMEA synthesis, RTCM RX |
-| USART1 | Debug output | PB6 TX, PB7 RX | 115200 | USART1 not used in stock firmware; reserved for debugging |
-| All UARTs | DMA | RX on DMA, TX blocking | — | Non-blocking RX via DMA; TX uses HAL blocking calls |
+| USART3 RX | GPS UBX stream in | PB11 | 115200 | F9P UART1 TX hard-wired via net-tie NT1; F9P switched from its 38400 default over I2C at boot |
+| USART3 TX | NMEA to MoTeC | PB10 | 115200 | Via solder jumper JP6 (2‑3) → MAX3232 → RS232 out. Shares USART3's single baud register with RX |
+| USART1 | Debug output | PB6 TX, PB7 RX | 115200 | Not used in stock firmware; reserved for debugging |
+| USART2 | Unused | PA2, PA15 | — | PA2 is unrouted on the board; PA15 only reaches JP7, which is bridged 2‑3 (RTCM → GPS direct) |
+
+**GPS configuration goes over I2C, not UART**: the board has no MCU→GPS UART path, so all UBX-CFG-VALSET traffic rides I2C2 to the F9P's DDC port (address 0x42). The high-rate UBX stream still arrives on USART3 RX.
+
+### UART direction solder jumpers
+
+| Jumper | Setting | Effect |
+|--------|---------|--------|
+| NT1 | fixed (net tie) | F9P UART1 TX → USART3 RX, always |
+| **JP6** | **bridge 2‑3** | MCU NMEA (USART3 TX) → RS232 out → MoTeC. *Do not bridge 1‑2*: the F9P's UART1 carries binary UBX in this firmware, which would feed garbage to the MoTeC |
+| **JP7** | **bridge 2‑3** | RS232 in → F9P UART1 RX directly — the RTK/RTCM correction path, no MCU involvement. (1‑2 routes RS232 in to PA15 instead; unsupported by stock firmware) |
 
 ### GPIO & external interfaces
 
@@ -243,7 +253,7 @@ Clear marker: kind=GATE_CLEAR_ALL wipes all gates
 | **NMEA synthesis** | ✓ Complete | MoTeC datalogger compatibility |
 | **Event time-marking** | ✓ Complete | GPS TIM-TM2 for button edge stamping |
 | **Wheel-speed aiding** | ✓ Designed | Code in place; needs VCU integration (not in critical path) |
-| **RTK support** | ⚠ Capable | ZED-F9P supports RTK; RTCM forwarding code in place; needs external correction source |
+| **RTK support** | ⚠ Capable | RTCM corrections flow RS232-in → F9P UART1 in hardware (JP7 2‑3); firmware enables RTCM3X input at boot. Needs an external correction source on the loom |
 | **SIL harness** | ❌ Pending | Synthetic track replay for validation testing |
 
 ✓ = production-ready | ⚠ = partially implemented | ❌ = not started

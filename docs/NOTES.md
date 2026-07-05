@@ -103,15 +103,17 @@ This document captures design rationale, known limitations, and planned improvem
 
 **Effort to implement**: ~1–2 weeks (write synthetic track generator, replay harness, comparison logic, documentation).
 
-### Limited RTK support
+### RTK ready in hardware, needs a correction source
 
-**What**: The ZED-F9P is RTK-capable, and RTCM correction forwarding is wired up (aux_task), but no external correction source is connected to the node.
+**What**: The ZED-F9P is RTK-capable and the correction path exists entirely in copper: RTCM arrives on the loom's RS232 input and flows straight to the F9P's UART1 RX via solder jumper JP7 (bridged 2‑3), never touching the MCU. The firmware enables RTCM3X input on UART1 at boot (`CFG-UART1INPROT-RTCM3X`).
 
-**Why missing**: Requires correction service (Trimble, Swift Navigation, etc.) subscription and antenna. Not a STAG 12 requirement.
+**What's missing**: An actual correction source feeding the RS232 input (base station or NTRIP-over-telemetry bridge).
 
-**Impact**: None (standalone GPS is accurate enough for lap timing; RTK would give ~2 cm accuracy instead of ~2–3 m).
+**Impact**: None without it (standalone GPS is accurate enough for lap timing; RTK would give ~2 cm instead of ~2–3 m). Note the fusion filter floors GPS position sigma at 0.5 m (imu_task.c), so exploiting full RTK precision for gate placement also means revisiting that floor.
 
-**Upgrade path**: Patch aux_task to accept RTCM via CAN (from a telemetry uplink) or direct UART (if a correction receiver is added).
+**Note on the correction stream's baud**: the RS232 source must run at 115200 (GPS_UART_BAUD) — the F9P's UART1 baud is shared between its RX (RTCM in) and TX (UBX out).
+
+**Alternative considered**: routing RTCM through the MCU (JP7 1‑2 → USART2 RX → forward over I2C). Rejected for now: the hardware path is zero-CPU and zero-firmware; revisit only if corrections need to arrive over CAN telemetry instead of RS232.
 
 ### No wheel-speed aiding integration
 

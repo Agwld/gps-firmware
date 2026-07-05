@@ -103,11 +103,12 @@ extern QueueHandle_t g_gps_pvt_queue_nmea;
  */
 void app_init(void);
 
-/** @brief Lock/unlock USART3 TX, shared between gps_task's boot config
- *         and aux_task's RTCM-forward (rtcm_bridge.c). One of this
- *         firmware's two mutexes (the other is canbc_state's). */
-void app_gps_tx_lock(void);
-void app_gps_tx_unlock(void);
+/** @brief Lock/unlock the I2C2 bus, shared between gps_task's boot
+ *         config (F9P DDC port, gps_i2c.c) and sys_task's MCP9800
+ *         temperature reads. One of this firmware's two mutexes (the
+ *         other is canbc_state's). */
+void app_i2c_lock(void);
+void app_i2c_unlock(void);
 
 /** @brief Set (and never clear) system event bits. ISR-safe variant absent
  *         by design: call from task context only. */

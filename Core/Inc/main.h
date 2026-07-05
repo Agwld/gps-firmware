@@ -69,15 +69,13 @@ extern "C" {
  * Peripheral handles (defined in the Core/Src peripheral init files)
  */
 extern UART_HandleTypeDef huart1; /* debug */
-extern UART_HandleTypeDef huart2; /* RS232: NMEA out / RTCM in */
-extern UART_HandleTypeDef huart3; /* ZED-F9P UART1 */
+extern UART_HandleTypeDef huart3; /* RX: ZED-F9P UART1; TX: RS232 NMEA
+                                    * to MoTeC (JP6 2-3) */
 extern SPI_HandleTypeDef hspi1;   /* LSM6DSO32 */
-extern I2C_HandleTypeDef hi2c2;   /* F9P I2C, MCP9800, EEPROM */
+extern I2C_HandleTypeDef hi2c2;   /* F9P config (DDC), MCP9800, EEPROM */
 extern FDCAN_HandleTypeDef hfdcan1;
 extern DMA_HandleTypeDef hdma_usart3_rx;
 extern DMA_HandleTypeDef hdma_usart3_tx;
-extern DMA_HandleTypeDef hdma_usart2_rx;
-extern DMA_HandleTypeDef hdma_usart2_tx;
 extern DMA_HandleTypeDef hdma_spi1_rx;
 extern DMA_HandleTypeDef hdma_spi1_tx;
 

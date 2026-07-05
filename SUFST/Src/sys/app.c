@@ -104,19 +104,19 @@ static StackType_t s_sys_stack[APP_STACK_SYS];
 static StaticEventGroup_t s_events_buf;
 static EventGroupHandle_t s_events;
 
-static StaticSemaphore_t s_gps_tx_mutex_buf;
-static SemaphoreHandle_t s_gps_tx_mutex;
+static StaticSemaphore_t s_i2c_mutex_buf;
+static SemaphoreHandle_t s_i2c_mutex;
 
 void
-app_gps_tx_lock(void)
+app_i2c_lock(void)
 {
-    xSemaphoreTake(s_gps_tx_mutex, portMAX_DELAY);
+    xSemaphoreTake(s_i2c_mutex, portMAX_DELAY);
 }
 
 void
-app_gps_tx_unlock(void)
+app_i2c_unlock(void)
 {
-    xSemaphoreGive(s_gps_tx_mutex);
+    xSemaphoreGive(s_i2c_mutex);
 }
 
 void
@@ -141,7 +141,7 @@ void
 app_init(void)
 {
     s_events = xEventGroupCreateStatic(&s_events_buf);
-    s_gps_tx_mutex = xSemaphoreCreateMutexStatic(&s_gps_tx_mutex_buf);
+    s_i2c_mutex = xSemaphoreCreateMutexStatic(&s_i2c_mutex_buf);
 
     canbc_state_init();
 

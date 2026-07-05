@@ -11,8 +11,13 @@
  */
 #define GPS_NAV_RATE_HZ        20U  /* F9P: 20 Hz needs GPS+GAL only */
 #define GPS_MEAS_PERIOD_MS     (1000U / GPS_NAV_RATE_HZ)
-#define GPS_BAUD_TARGET        460800U
-#define GPS_BAUD_DEFAULT       38400U
+/* USART3's RX (F9P UBX stream in) and TX (NMEA out to the MoTeC via
+ * JP6) share the one baud-rate register, so this single rate serves
+ * both. 115200 clears the 20 Hz UBX stream (~25 kbit/s) with 4x margin
+ * while staying inside the MAX3232's (~235 kbit/s) and the MoTeC's
+ * RS232 limits - don't raise it without checking both. The F9P's UART1
+ * is switched to this rate over I2C by gps_config at boot. */
+#define GPS_UART_BAUD          115200U
 
 /*
  * IMU: LSM6DSO32, accel +/-16 g, gyro +/-2000 dps, 104 Hz ODR

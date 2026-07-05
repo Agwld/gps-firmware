@@ -1,38 +1,52 @@
 /**
  * @file    gps_config.c
- * @brief   ZED-F9P boot configuration (see gps_config.h for caveats on
- *          the CFG key table below).
+ * @brief   ZED-F9P boot configuration over I2C (see gps_config.h).
+ *
+ * All frames go out - and all ACK/VALGET responses come back - on the
+ * I2C transport (gps_i2c.c), because the board has no MCU->GPS UART
+ * path. The configuration itself still targets UART1: that is the port
+ * the UBX stream leaves on (hard-wired to USART3 RX) and the port RTCM
+ * corrections enter on (RS232 in via JP7 bridged 2-3).
  */
 
 #include "gps/gps_config.h"
 
 #include <string.h>
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 #include "main.h"
 
 #include "board/board_config.h"
+#include "gps/gps_i2c.h"
 
 /* CFG-* key IDs (u-blox VALSET/VALGET), with their storage width in
  * bytes. See gps_config.h - verify against the ZED-F9P interface manual. */
-#define KEY_UART1_BAUDRATE     0x40520001U /* U4 */
-#define KEY_UART1OUTPROT_UBX   0x10740001U /* L  */
-#define KEY_UART1OUTPROT_NMEA  0x10740002U /* L  */
-#define KEY_RATE_MEAS          0x30210001U /* U2, ms */
-#define KEY_NAVSPG_DYNMODEL    0x20110021U /* E1 */
-#define KEY_SIGNAL_GPS_ENA     0x1031001FU /* L */
-#define KEY_SIGNAL_GAL_ENA     0x10310021U /* L */
-#define KEY_SIGNAL_GLO_ENA     0x10310025U /* L */
-#define KEY_SIGNAL_BDS_ENA     0x10310022U /* L */
-#define KEY_SIGNAL_QZSS_ENA    0x10310024U /* L */
-#define KEY_MSGOUT_NAV_PVT_U1  0x20910007U /* U1, rate in measurement cycles */
-#define KEY_MSGOUT_TIM_TM2_U1  0x20910179U /* U1 */
+#define KEY_UART1_BAUDRATE      0x40520001U /* U4 */
+#define KEY_UART1OUTPROT_UBX    0x10740001U /* L  */
+#define KEY_UART1OUTPROT_NMEA   0x10740002U /* L  */
+#define KEY_UART1INPROT_RTCM3X  0x10730004U /* L  */
+#define KEY_RATE_MEAS           0x30210001U /* U2, ms */
+#define KEY_NAVSPG_DYNMODEL     0x20110021U /* E1 */
+#define KEY_SIGNAL_GPS_ENA      0x1031001FU /* L */
+#define KEY_SIGNAL_GAL_ENA      0x10310021U /* L */
+#define KEY_SIGNAL_GLO_ENA      0x10310025U /* L */
+#define KEY_SIGNAL_BDS_ENA      0x10310022U /* L */
+#define KEY_SIGNAL_QZSS_ENA     0x10310024U /* L */
+#define KEY_MSGOUT_NAV_PVT_U1   0x20910007U /* U1, rate in meas. cycles */
+#define KEY_MSGOUT_TIM_TM2_U1   0x20910179U /* U1 */
 
 #define DYNMODEL_AUTOMOTIVE 4U
 
 #define VALSET_LAYER_RAM (1U << 0)
 
-#define GPS_CFG_RETRY_LIMIT   3U
+#define GPS_CFG_RETRY_LIMIT    3U
 #define GPS_CFG_ACK_TIMEOUT_MS 500U
+/* The F9P takes up to ~1 s after power-up before its DDC port answers;
+ * probe attempts are spaced to ride that out without tripping on it. */
+#define GPS_PROBE_RETRY_LIMIT  8U
+#define GPS_PROBE_TIMEOUT_MS   300U
 
 typedef struct {
     uint32_t key;
@@ -83,51 +97,55 @@ build_valget(uint8_t *buf, uint16_t buf_size, uint32_t key)
                             payload, sizeof(payload));
 }
 
-/* Blocking UART TX (config happens once at boot, well before any task
- * needs USART3 concurrently) with a bounded wait for a matching UBX
- * frame, feeding the byte-at-a-time parser directly from HAL_UART_Receive
- * polling - simpler than standing up the DMA ring this early, and boot
- * config only runs once. */
+/* Send a frame over I2C and poll the DDC output stream for a matching
+ * UBX response, feeding the byte-at-a-time parser. The stream may carry
+ * unrelated traffic (the F9P outputs NMEA on I2C by default until this
+ * boot sequence quiets UART1 - I2C output protocol is left at default);
+ * the parser simply resyncs past it. Polls yield with vTaskDelay so the
+ * boot sequence can't starve lower-priority tasks (sys_task feeds the
+ * watchdog). */
 static bool
 send_and_wait(const uint8_t *frame, uint16_t frame_len, ubx_parser_t *p,
               uint8_t want_cls, uint8_t want_id, uint32_t timeout_ms)
 {
-    if (HAL_UART_Transmit(&huart3, (uint8_t *) frame, frame_len, 200U) !=
-        HAL_OK) {
+    if (gps_i2c_write(frame, frame_len) != STATUS_OK) {
         return false;
     }
 
-    uint32_t start = HAL_GetTick();
-    while ((HAL_GetTick() - start) < timeout_ms) {
-        uint8_t byte;
-        if (HAL_UART_Receive(&huart3, &byte, 1U, 20U) != HAL_OK) {
+    TickType_t start = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - start) < pdMS_TO_TICKS(timeout_ms)) {
+        uint8_t chunk[32];
+        uint16_t n = 0U;
+        if (gps_i2c_read(chunk, sizeof(chunk), &n) != STATUS_OK) {
+            return false;
+        }
+        if (n == 0U) {
+            vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
-        if (ubx_parser_feed(p, byte)) {
-            if (p->frame.cls == want_cls && p->frame.id == want_id) {
-                return true;
+        for (uint16_t i = 0U; i < n; i++) {
+            if (ubx_parser_feed(p, chunk[i])) {
+                if (p->frame.cls == want_cls && p->frame.id == want_id) {
+                    return true;
+                }
             }
         }
     }
     return false;
 }
 
+/* Is the receiver awake and talking UBX on the DDC port yet? */
 static bool
-try_probe_baud(uint32_t baud)
+probe(void)
 {
-    huart3.Init.BaudRate = baud;
-    if (HAL_UART_Init(&huart3) != HAL_OK) {
-        return false;
-    }
-
     uint8_t frame[16];
-    uint16_t len =
-        ubx_frame_build(frame, sizeof(frame), UBX_CLASS_MON, UBX_MON_VER,
-                        NULL, 0U);
+    uint16_t len = ubx_frame_build(frame, sizeof(frame), UBX_CLASS_MON,
+                                    UBX_MON_VER, NULL, 0U);
 
     ubx_parser_t p;
     ubx_parser_init(&p);
-    return send_and_wait(frame, len, &p, UBX_CLASS_MON, UBX_MON_VER, 300U);
+    return send_and_wait(frame, len, &p, UBX_CLASS_MON, UBX_MON_VER,
+                          GPS_PROBE_TIMEOUT_MS);
 }
 
 static bool
@@ -182,35 +200,29 @@ verify_u4(uint32_t key, uint32_t expected)
 status_t
 gps_config_run_boot_sequence(void)
 {
-    bool at_target = try_probe_baud(GPS_BAUD_TARGET);
-
-    if (!at_target) {
-        if (!try_probe_baud(GPS_BAUD_DEFAULT)) {
-            return STATUS_TIMEOUT;
-        }
-
-        /* The ACK to this VALSET is sent at the OLD baud but may
-         * straddle the switch to the new one - per gps_config.h, it is
-         * never trusted; only the VALGET readback below is. Retrying
-         * on a missing/garbled ACK here would just resend into a
-         * receiver that may already have applied it, so this is a
-         * single best-effort attempt. */
-        kv_t baud_kv = {KEY_UART1_BAUDRATE, GPS_BAUD_TARGET, 4U};
-        (void) apply_valset(&baud_kv, 1U);
-
-        huart3.Init.BaudRate = GPS_BAUD_TARGET;
-        if (HAL_UART_Init(&huart3) != HAL_OK) {
-            return STATUS_ERROR;
-        }
-
-        if (!verify_u4(KEY_UART1_BAUDRATE, GPS_BAUD_TARGET)) {
-            return STATUS_ERROR;
-        }
+    bool alive = false;
+    for (uint32_t attempt = 0U;
+         attempt < GPS_PROBE_RETRY_LIMIT && !alive; attempt++) {
+        alive = probe();
+    }
+    if (!alive) {
+        return STATUS_TIMEOUT;
     }
 
+    /* One shot, RAM layer (reapplied every boot). The baud key switches
+     * UART1 to GPS_UART_BAUD - safe to include in the batch because the
+     * ACK comes back on I2C, unaffected by the UART changing under it
+     * (the old firmware's careful old-baud/new-baud ACK dance existed
+     * only because config used to ride the same UART it was retuning). */
     kv_t cfg[] = {
+        {KEY_UART1_BAUDRATE, GPS_UART_BAUD, 4U},
         {KEY_UART1OUTPROT_UBX, 1U, 1U},
         {KEY_UART1OUTPROT_NMEA, 0U, 1U},
+        /* RTCM corrections arrive on UART1 directly from the RS232
+         * input (JP7 bridged 2-3) - the MCU never sees them. Enabled
+         * explicitly even though it's the F9P default, so the intent
+         * survives a future default-tightening pass. */
+        {KEY_UART1INPROT_RTCM3X, 1U, 1U},
         {KEY_RATE_MEAS, GPS_MEAS_PERIOD_MS, 2U},
         {KEY_NAVSPG_DYNMODEL, DYNMODEL_AUTOMOTIVE, 1U},
         {KEY_SIGNAL_GPS_ENA, 1U, 1U},
@@ -224,7 +236,11 @@ gps_config_run_boot_sequence(void)
 
     for (uint32_t attempt = 0U; attempt < GPS_CFG_RETRY_LIMIT; attempt++) {
         if (apply_valset(cfg, sizeof(cfg) / sizeof(cfg[0]))) {
-            return STATUS_OK;
+            /* Readback (not the ACK) is what's trusted, per gps_config.h. */
+            if (verify_u4(KEY_UART1_BAUDRATE, GPS_UART_BAUD)) {
+                return STATUS_OK;
+            }
+            return STATUS_ERROR;
         }
     }
 

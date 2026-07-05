@@ -7,8 +7,6 @@
 
 DMA_HandleTypeDef hdma_usart3_rx;
 DMA_HandleTypeDef hdma_usart3_tx;
-DMA_HandleTypeDef hdma_usart2_rx;
-DMA_HandleTypeDef hdma_usart2_tx;
 DMA_HandleTypeDef hdma_spi1_rx;
 DMA_HandleTypeDef hdma_spi1_tx;
 
@@ -54,29 +52,6 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
         g.Alternate = GPIO_AF7_USART1;
         HAL_GPIO_Init(GPIOB, &g);
     }
-    else if (huart->Instance == USART2) {
-        __HAL_RCC_USART2_CLK_ENABLE();
-        __HAL_RCC_GPIOA_CLK_ENABLE();
-
-        /* PA2 TX, PA15 RX, AF7 */
-        g.Pin = GPIO_PIN_2 | GPIO_PIN_15;
-        g.Mode = GPIO_MODE_AF_PP;
-        g.Pull = GPIO_NOPULL;
-        g.Speed = GPIO_SPEED_FREQ_LOW;
-        g.Alternate = GPIO_AF7_USART2;
-        HAL_GPIO_Init(GPIOA, &g);
-
-        msp_dma_link(&hdma_usart2_rx, DMA1_Channel2, DMA_REQUEST_USART2_RX,
-                     DMA_PERIPH_TO_MEMORY, DMA_CIRCULAR, DMA_PRIORITY_MEDIUM);
-        __HAL_LINKDMA(huart, hdmarx, hdma_usart2_rx);
-
-        msp_dma_link(&hdma_usart2_tx, DMA1_Channel3, DMA_REQUEST_USART2_TX,
-                     DMA_MEMORY_TO_PERIPH, DMA_NORMAL, DMA_PRIORITY_LOW);
-        __HAL_LINKDMA(huart, hdmatx, hdma_usart2_tx);
-
-        HAL_NVIC_SetPriority(USART2_IRQn, 6, 0);
-        HAL_NVIC_EnableIRQ(USART2_IRQn);
-    }
     else if (huart->Instance == USART3) {
         __HAL_RCC_USART3_CLK_ENABLE();
         __HAL_RCC_GPIOB_CLK_ENABLE();
@@ -107,13 +82,6 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef *huart)
     if (huart->Instance == USART1) {
         __HAL_RCC_USART1_CLK_DISABLE();
         HAL_GPIO_DeInit(GPIOB, GPIO_PIN_6 | GPIO_PIN_7);
-    }
-    else if (huart->Instance == USART2) {
-        __HAL_RCC_USART2_CLK_DISABLE();
-        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_2 | GPIO_PIN_15);
-        HAL_DMA_DeInit(huart->hdmarx);
-        HAL_DMA_DeInit(huart->hdmatx);
-        HAL_NVIC_DisableIRQ(USART2_IRQn);
     }
     else if (huart->Instance == USART3) {
         __HAL_RCC_USART3_CLK_DISABLE();

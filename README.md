@@ -36,7 +36,7 @@ The SUFST STAG 12 GPS node is a **standalone sensor module** that transforms raw
 ## Hardware
 
 The GPS mainboard (`pcb/gps-mainboard`) is a 2-layer, 65 mm × 85 mm board that:
-- Talks to the car via 1× CAN-S (1 Mbps sensor bus), 1× RS232 (MoTeC datalogger), 1× steering-wheel button
+- Talks to the car via 1× CAN-S (1 Mbps sensor bus), 1× RS232 (NMEA out to the MoTeC datalogger, RTCM corrections in for RTK), 1× steering-wheel button
 - Synchronises to GPS time via a 1 PPS input from the ZED-F9P
 - Runs 104 Hz IMU samples through a real-time fusion pipeline
 - Persists gate configuration in the STM32's internal flash

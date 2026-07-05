@@ -1,8 +1,16 @@
 /**
  * @file    aux_task.c
- * @brief   NMEA synthesis (USART2 TX) + RTCM forward poll. Owns USART2
- *          entirely; USART3 TX is shared with gps_task via
- *          app_gps_tx_lock()/unlock().
+ * @brief   NMEA synthesis to the MoTeC datalogger, on USART3 TX.
+ *
+ * USART3's two directions carry unrelated flows: RX is the F9P's UBX
+ * stream (owned by gps_task), TX drives the RS232 output to the MoTeC
+ * via solder jumper JP6 (bridged 2-3) - this task is TX's only writer,
+ * so no lock is needed. Both directions necessarily share one baud
+ * (GPS_UART_BAUD), since a USART has a single baud-rate register.
+ *
+ * RTCM corrections never pass through here (or the MCU at all): the
+ * RS232 input is routed straight to the F9P's UART1 RX in hardware
+ * (JP7 bridged 2-3).
  */
 
 #include "nmea/aux_task.h"
@@ -17,15 +25,12 @@
 #include "canbus/can_defs.h"
 #include "gps/ubx.h"
 #include "nmea/nmea_out.h"
-#include "nmea/rtcm_bridge.h"
 #include "sys/app.h"
 
 void
 aux_task_main(void *argument)
 {
     (void) argument;
-
-    rtcm_bridge_init();
 
     uint32_t rate_hz = NMEA_OUT_RATE_HZ;
     bool enabled = true;
@@ -43,8 +48,6 @@ aux_task_main(void *argument)
             }
         }
 
-        rtcm_bridge_poll();
-
         if (enabled) {
             ubx_nav_pvt_t pvt;
             if (xQueuePeek(g_gps_pvt_queue_nmea, &pvt, 0) == pdTRUE) {
@@ -53,15 +56,15 @@ aux_task_main(void *argument)
 
                 len = nmea_format_gga(&pvt, line, sizeof(line));
                 if (len > 0U) {
-                    HAL_UART_Transmit(&huart2, (uint8_t *) line, len, 50U);
+                    HAL_UART_Transmit(&huart3, (uint8_t *) line, len, 50U);
                 }
                 len = nmea_format_rmc(&pvt, line, sizeof(line));
                 if (len > 0U) {
-                    HAL_UART_Transmit(&huart2, (uint8_t *) line, len, 50U);
+                    HAL_UART_Transmit(&huart3, (uint8_t *) line, len, 50U);
                 }
                 len = nmea_format_vtg(&pvt, line, sizeof(line));
                 if (len > 0U) {
-                    HAL_UART_Transmit(&huart2, (uint8_t *) line, len, 50U);
+                    HAL_UART_Transmit(&huart3, (uint8_t *) line, len, 50U);
                 }
             }
         }
