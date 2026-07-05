@@ -324,12 +324,24 @@ Every driver-level assumption flagged anywhere in this file has now
 been checked against a real source document — nothing left in this
 codebase is "written from memory and unverified."
 - **Known gaps, not silent ones**: gate *clears* aren't persisted to
-  flash (only sets); the IMU SPI path is blocking HAL calls rather than
-  the DMA pipeline originally planned; no host-side SIL
-  (software-in-the-loop) harness exists yet to replay a synthetic or
-  recorded track through the full fusion+timing pipeline and check lap
-  times against ground truth — the per-module unit tests above cover
-  each piece in isolation, not the integrated behaviour.
+  flash (only sets); no host-side SIL (software-in-the-loop) harness
+  exists yet to replay a synthetic or recorded track through the full
+  fusion+timing pipeline and check lap times against ground truth — the
+  per-module unit tests above cover each piece in isolation, not the
+  integrated behaviour.
+- **IMU SPI reads are now DMA-backed** (previously blocking HAL calls):
+  [lsm6dso32.c](SUFST/Src/imu/lsm6dso32.c)'s register reads use
+  `HAL_SPI_TransmitReceive_DMA` on the SPI1 RX/TX DMA channels (already
+  wired in the MSP), and `imu_task` blocks on a completion semaphore for
+  the duration of each burst — yielding the CPU to other tasks instead
+  of spinning. The DMA buffers are deliberately file-scope so they live
+  in DMA-reachable SRAM (CCMRAM, where task stacks are meant to live,
+  isn't reachable by DMA1 on the G4). A `SPI1_IRQHandler` routes bus
+  errors to `HAL_SPI_ErrorCallback`, and the read path both rejects a
+  faulted transfer and drains a stale completion token after a timeout
+  so a failed read can't hand the next read partial data. Still needs a
+  logic-analyzer/bench pass to confirm end-to-end, like all the IMU
+  path.
 - **CPU load reporting is now real** (previously a placeholder zero):
   `configGENERATE_RUN_TIME_STATS` is wired up in
   [FreeRTOSConfig.h](Core/Inc/FreeRTOSConfig.h) using the microsecond

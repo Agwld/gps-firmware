@@ -65,10 +65,14 @@ status_t lsm6dso32_init(void);
  *         accel/gyro ODR cycle, per AN5192. Call after lsm6dso32_init(). */
 status_t lsm6dso32_mag_init(void);
 
-/** @brief Blocking read of one accel+gyro sample over SPI. */
+/** @brief Read one accel+gyro sample over SPI via DMA. The calling task
+ *         blocks on a completion semaphore (yielding the CPU) for the
+ *         duration of the transfer rather than spinning; must be called
+ *         from a FreeRTOS task context, after lsm6dso32_init(). */
 status_t lsm6dso32_read(lsm6dso32_sample_t *out);
 
-/** @brief Blocking read of the sensor-hub's latched IIS2MDC output. */
+/** @brief DMA read of the sensor-hub's latched IIS2MDC output (same
+ *         task-blocking semantics as lsm6dso32_read()). */
 status_t lsm6dso32_read_mag(lsm6dso32_mag_sample_t *out);
 
 #ifdef __cplusplus

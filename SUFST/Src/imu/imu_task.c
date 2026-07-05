@@ -4,10 +4,11 @@
  *          timing -> publish. Owns gates.c/laptimer.c/kf6.c/ahrs.c and
  *          the geodesy ENU origin - no other task touches them.
  *
- * SPI reads are blocking HAL calls rather than the DMA pipeline the plan
- * describes - a reasonable first cut given a 104 Hz / ~14-byte transfer
- * budget, but a lower-CPU-overhead DMA+EXTI version is a natural
- * follow-up once this is bench-verified to actually work.
+ * IMU SPI reads (lsm6dso32.c) are DMA-backed: this task blocks on a
+ * completion semaphore while each burst clocks out, yielding the CPU to
+ * other tasks instead of spinning in a blocking HAL call. The loop is
+ * still driven by the DRDY notification below; the DMA just removes the
+ * transfer time from this task's busy budget.
  */
 
 #include "imu/imu_task.h"

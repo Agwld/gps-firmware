@@ -88,6 +88,15 @@ void DMA1_Channel6_IRQHandler(void)
     HAL_DMA_IRQHandler(&hdma_usart3_tx);
 }
 
+/* SPI1 error interrupt (ERRIE, enabled by the HAL DMA transfer): routes
+ * overrun/mode-fault to HAL_SPI_ErrorCallback so a failed IMU read is
+ * reported promptly instead of only via the caller's DMA timeout. Normal
+ * completion is signalled off the SPI1_RX DMA channel (CH4), not here. */
+void SPI1_IRQHandler(void)
+{
+    HAL_SPI_IRQHandler(&hspi1);
+}
+
 void USART2_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&huart2);

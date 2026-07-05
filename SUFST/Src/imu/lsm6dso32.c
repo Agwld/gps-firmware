@@ -6,7 +6,13 @@
 
 #include "imu/lsm6dso32.h"
 
+#include <string.h>
+
 #include "main.h"
+
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
 
 #include "board/board_config.h"
 
@@ -59,6 +65,30 @@
 #define IMU_GYRO_SENSITIVITY_DPS_PER_LSB (IMU_GYRO_FS_DPS / 32768.0f)
 #define IIS2MDC_SENSITIVITY_UT_PER_LSB 0.15f /* datasheet: 1.5 mG/LSB */
 
+/* Largest single burst is the 14-byte accel/gyro read plus its leading
+ * address byte. */
+#define SPI_MAX_XFER 15U
+
+/* DMA-completion timeout: a 15-byte transfer at 5.3 MHz is ~23 us, so a
+ * few ms is enormous headroom - it exists only to keep the loop alive if
+ * a transfer never completes (unplugged sensor, bus fault) rather than
+ * blocking the imu_task forever. */
+#define SPI_DMA_TIMEOUT_MS 5U
+
+/* DMA source/sink buffers. File-scope (not stack-local) so they always
+ * live in .bss/SRAM, which DMA1 can reach - CCMRAM (where the linker
+ * script intends task stacks to eventually live) is NOT DMA-accessible
+ * on the G4, so a stack buffer would be a latent trap. */
+static uint8_t s_spi_tx[SPI_MAX_XFER];
+static uint8_t s_spi_rx[SPI_MAX_XFER];
+
+/* Given once from the SPI DMA complete/error ISR, taken by the (only)
+ * caller - imu_task - so the task blocks (yielding the CPU) for the
+ * duration of each transfer instead of spinning in a blocking HAL call.
+ * SPI1 is touched by no other task, so no bus mutex is needed. */
+static StaticSemaphore_t s_spi_done_buf;
+static SemaphoreHandle_t s_spi_done;
+
 static void
 cs_low(void)
 {
@@ -83,24 +113,93 @@ write_reg(uint8_t reg, uint8_t val)
     return (st == HAL_OK) ? STATUS_OK : STATUS_ERROR;
 }
 
+/* Full-duplex DMA register read: clock out [addr | 0x80, dummy...] while
+ * clocking in [junk, data...]. One transfer keeps CS asserted across the
+ * whole burst; the sensor's register auto-increment (CTRL3_C.IF_INC)
+ * walks the map. CS is raised in the completion ISR for tight timing;
+ * the RX byte received during the address phase (s_spi_rx[0]) is
+ * discarded. */
 static status_t
 read_regs(uint8_t reg, uint8_t *buf, uint16_t len)
 {
-    uint8_t addr = (uint8_t) (reg | 0x80U); /* MSB=1 => read */
+    if (len == 0U || len > SPI_MAX_XFER - 1U) {
+        return STATUS_ERROR;
+    }
+
+    s_spi_tx[0] = (uint8_t) (reg | 0x80U); /* MSB=1 => read */
+    for (uint16_t i = 1U; i <= len; i++) {
+        s_spi_tx[i] = 0xFFU; /* dummy clocks for the read phase */
+    }
 
     cs_low();
-    HAL_StatusTypeDef st = HAL_SPI_Transmit(&hspi1, &addr, 1U, 10U);
-    if (st == HAL_OK) {
-        st = HAL_SPI_Receive(&hspi1, buf, len, 10U);
+    /* HAL_SPI_TransmitReceive_DMA clears hspi1.ErrorCode at entry, so the
+     * post-transfer error check below reflects only this transfer. */
+    if (HAL_SPI_TransmitReceive_DMA(&hspi1, s_spi_tx, s_spi_rx,
+                                     (uint16_t) (len + 1U)) != HAL_OK) {
+        cs_high();
+        return STATUS_ERROR;
     }
-    cs_high();
 
-    return (st == HAL_OK) ? STATUS_OK : STATUS_ERROR;
+    if (xSemaphoreTake(s_spi_done, pdMS_TO_TICKS(SPI_DMA_TIMEOUT_MS)) !=
+        pdTRUE) {
+        /* Transfer stalled: tear it down and raise CS ourselves (the ISR
+         * that normally does it never ran). Abort quiesces the peripheral
+         * so no further give can occur; the zero-wait take then drains a
+         * give that may have raced in just before the abort, so a stale
+         * token can't satisfy the next read's take without a real
+         * transfer. */
+        HAL_SPI_Abort(&hspi1);
+        (void) xSemaphoreTake(s_spi_done, 0);
+        cs_high();
+        return STATUS_TIMEOUT;
+    }
+
+    /* Woke on the semaphore, but that fires from the error callback too;
+     * reject a transfer that faulted (overrun etc.) rather than copying
+     * out partial data. CS was already raised by whichever callback ran. */
+    if (HAL_SPI_GetError(&hspi1) != HAL_SPI_ERROR_NONE) {
+        return STATUS_ERROR;
+    }
+
+    memcpy(buf, &s_spi_rx[1], len);
+    return STATUS_OK;
+}
+
+/* HAL SPI DMA callbacks (weak in the HAL, overridden here). SPI1 is the
+ * only SPI in use; guard anyway so this stays correct if another is
+ * added. Both raise CS and wake the waiting task - on error the task's
+ * take() would otherwise burn the full timeout before noticing. */
+void
+HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1) {
+        cs_high();
+        BaseType_t hp_woken = pdFALSE;
+        xSemaphoreGiveFromISR(s_spi_done, &hp_woken);
+        portYIELD_FROM_ISR(hp_woken);
+    }
+}
+
+void
+HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1) {
+        cs_high();
+        BaseType_t hp_woken = pdFALSE;
+        xSemaphoreGiveFromISR(s_spi_done, &hp_woken);
+        portYIELD_FROM_ISR(hp_woken);
+    }
 }
 
 status_t
 lsm6dso32_init(void)
 {
+    /* Create the DMA-completion semaphore before the first read_regs()
+     * uses it (idempotent so a retry-after-fault re-init is safe). */
+    if (s_spi_done == NULL) {
+        s_spi_done = xSemaphoreCreateBinaryStatic(&s_spi_done_buf);
+    }
+
     uint8_t who_am_i = 0U;
     if (read_regs(REG_WHO_AM_I, &who_am_i, 1U) != STATUS_OK) {
         return STATUS_TIMEOUT;

@@ -147,6 +147,12 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi)
         msp_dma_link(&hdma_spi1_tx, DMA1_Channel5, DMA_REQUEST_SPI1_TX,
                      DMA_MEMORY_TO_PERIPH, DMA_NORMAL, DMA_PRIORITY_HIGH);
         __HAL_LINKDMA(hspi, hdmatx, hdma_spi1_tx);
+
+        /* SPI error interrupt: priority 5 to match the SPI DMA channels
+         * and stay >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, so
+         * the FromISR give in HAL_SPI_ErrorCallback is legal. */
+        HAL_NVIC_SetPriority(SPI1_IRQn, 5, 0);
+        HAL_NVIC_EnableIRQ(SPI1_IRQn);
     }
 }
 
