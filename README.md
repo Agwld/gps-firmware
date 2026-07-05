@@ -311,8 +311,18 @@ needs a bench to confirm," not "done":
     UBX-NAV-PVT (all 20 decoded fields) and UBX-TIM-TM2 (all 10 fields)
     byte layouts in [ubx.c](SUFST/Src/gps/ubx.c) — all found correct,
     no changes needed.
-  - **Still unverified**: the `Wheel_Speeds` (0x251) byte layout (no
-    source document for that one in this pass).
+  - `Wheel_Speeds` (0x251, [canbc_task.c](SUFST/Src/canbus/canbc_task.c)):
+    checked against the real `sufst/can-defs` repo (`stag-12` branch,
+    `dbc/CAN-S.dbc`) once it was available — found the FR/FL/RR/RL
+    variable labels backwards relative to the DBC's little-endian start
+    bits (RL is byte 0, not FR); harmless today since the code only
+    sums all four for a symmetric average, but would have silently
+    picked the wrong wheel pair once the planned "least-slip-prone
+    pair" refinement lands, so fixed now while it's still free.
+
+Every driver-level assumption flagged anywhere in this file has now
+been checked against a real source document — nothing left in this
+codebase is "written from memory and unverified."
 - **Known gaps, not silent ones**: gate *clears* aren't persisted to
   flash (only sets); CPU load reporting in `GPS_Status` is a placeholder
   zero (`configGENERATE_RUN_TIME_STATS` isn't wired up); the IMU SPI path
@@ -353,6 +363,14 @@ on the bench rather than at compile time:
   other bit AN5192's example sets, was checked and correctly left
   clear — the gps-mainboard netlist confirms R27/R28 already provide
   external pull-ups on that I2C bus.)
+- **`Wheel_Speeds` (0x251) wheel labels were backwards.** The DBC's
+  little-endian start bits put `WHEEL_RL_SPEED` at byte 0 and
+  `WHEEL_FR_SPEED` at byte 6, but the driver had them labeled
+  `fr,fl,rr,rl` in that byte order — exactly reversed. Numerically
+  invisible today (the code just sums all four for a symmetric
+  average), but would have picked the wrong wheel pair the moment
+  anyone implements the "least-slip-prone pair" refinement already
+  called out as a deferred item.
 
 Also: the board's confirmed CB (128 KB flash) part was documented above
 but the build system was still hardcoded to the smaller C8 (64 KB)

@@ -23,12 +23,22 @@
 #include "canbus/canbc.h"
 #include "sys/app.h"
 
-/* Wheel_Speeds (0x251): owned by the VCU, confirmed against
- * sufst/can-defs (stag-12 branch, dbc/CAN-S.dbc) as 4x i16 @ 0.01 m/s.
- * Byte offsets below (FR,FL,RR,RL ascending) follow the signal order as
- * named in that DBC but have not been independently re-verified byte-
- * for-byte here - confirm against the DBC (or a bench candump) before
- * trusting this on a real bus. */
+/* Wheel_Speeds (0x251): owned by the VCU, confirmed byte-for-byte
+ * against sufst/can-defs (stag-12 branch, dbc/CAN-S.dbc):
+ *   BO_ 593 Wheel_Speeds: 8 VCU
+ *    SG_ WHEEL_FR_SPEED : 48|16@1- (0.01,0) "m/s"
+ *    SG_ WHEEL_FL_SPEED : 32|16@1- (0.01,0) "m/s"
+ *    SG_ WHEEL_RR_SPEED : 16|16@1- (0.01,0) "m/s"
+ *    SG_ WHEEL_RL_SPEED :  0|16@1- (0.01,0) "m/s"
+ * All four are little-endian (@1) signed i16, so for a DBC start bit N
+ * the byte pair is [N/8 .. N/8+1] LSB-first: RL is bytes[0:1], RR
+ * bytes[2:3], FL bytes[4:5], FR bytes[6:7] - ascending start bit does
+ * NOT mean FR-first, it means RL-first. This previously had the byte
+ * order right but the FR/FL/RR/RL labels backwards; harmless for
+ * today's symmetric 4-wheel average (sum doesn't care about labels)
+ * but would silently pick the wrong pair if the planned "average of
+ * the two least-slip-prone wheels" refinement lands without re-fixing
+ * this. */
 #define CAN_ID_WHEEL_SPEEDS 0x251U
 
 /* Staggered periodic broadcast rota: each entry fires every
@@ -294,16 +304,16 @@ HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
             can_unpack_gps_command(data, &cmd);
             xQueueSendFromISR(g_can_rx_cmd_queue, &cmd, &hp_woken);
         } else if (header.Identifier == CAN_ID_WHEEL_SPEEDS) {
-            int16_t fr = (int16_t) (uint16_t) (data[0] | (data[1] << 8));
-            int16_t fl = (int16_t) (uint16_t) (data[2] | (data[3] << 8));
-            int16_t rr = (int16_t) (uint16_t) (data[4] | (data[5] << 8));
-            int16_t rl = (int16_t) (uint16_t) (data[6] | (data[7] << 8));
+            int16_t rl = (int16_t) (uint16_t) (data[0] | (data[1] << 8));
+            int16_t rr = (int16_t) (uint16_t) (data[2] | (data[3] << 8));
+            int16_t fl = (int16_t) (uint16_t) (data[4] | (data[5] << 8));
+            int16_t fr = (int16_t) (uint16_t) (data[6] | (data[7] << 8));
 
             /* Simple 4-wheel average: a safe default independent of
              * drivetrain layout. The plan's "average of the two non-
              * driven/least-slip-prone wheels" refinement is deferred to
-             * bench testing once the drivetrain configuration and this
-             * DBC's exact byte layout are both confirmed. */
+             * bench testing once the drivetrain configuration is known -
+             * the byte layout itself is now confirmed above. */
             float speed_mps =
                 0.01f * 0.25f * (float) (fr + fl + rr + rl);
             xQueueOverwriteFromISR(g_wheelspeed_queue, &speed_mps,
