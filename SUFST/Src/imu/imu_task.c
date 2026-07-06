@@ -41,13 +41,13 @@
 
 static TaskHandle_t s_imu_task_handle;
 
-/* Active magnetometer calibration (loaded from flash at boot, replaced
- * when a CAN-triggered calibration pass finishes) and, while a pass is
- * in progress, the accumulator collecting it. imu_task owns both since
- * it's the only task with raw mag samples each cycle. */
-static mag_cal_result_t s_mag_cal;
-static mag_cal_accumulator_t s_mag_cal_acc;
-static bool s_mag_cal_in_progress;
+/* Magnetometer calibration runs continuously in the background: every
+ * raw sample is fed in as the car drives, the quality flag climbs as the
+ * heading circle fills, and it's cross-checked against GPS course. Seeded
+ * from flash at boot. imu_task owns it - it's the only task with raw mag
+ * samples each cycle. s_last_mag_save rate-limits flash writes. */
+static mag_cal_cont_t s_mag_cont;
+static TickType_t s_last_mag_save;
 
 /* Gates persisted as absolute lat/lon (flash_store), loaded at boot but
  * only resolvable to ENU once the first fix sets the frame origin - so
@@ -64,24 +64,20 @@ deg_to_1e7(double deg)
     return (int32_t) (scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
 }
 
+/* Calibration is continuous, so the old START/STOP pass is repurposed:
+ * START forces a from-scratch rebuild (throw the current cal away and
+ * re-sweep - use it if the magnetic environment changed, e.g. new
+ * hardware bolted near the sensor); STOP is a no-op, kept so old senders
+ * don't get NAKed. */
 static void
 apply_mag_cal_commands(void)
 {
     app_cmd_t cmd;
     while (xQueueReceive(g_mag_cal_cmd_queue, &cmd, 0) == pdTRUE) {
         if (cmd.cmd == CAN_CMD_MAG_CAL_START) {
-            mag_cal_start(&s_mag_cal_acc);
-            s_mag_cal_in_progress = true;
-        } else if (cmd.cmd == CAN_CMD_MAG_CAL_STOP) {
-            s_mag_cal_in_progress = false;
-            mag_cal_result_t new_cal;
-            if (mag_cal_finish(&s_mag_cal_acc, &new_cal) == STATUS_OK) {
-                s_mag_cal = new_cal;
-                flash_store_save_mag_cal(&s_mag_cal);
-            }
-            /* On failure (not enough rotation/samples), keep the
-             * previous calibration rather than replacing it with
-             * garbage. */
+            mag_cal_result_t identity;
+            mag_cal_identity(&identity);
+            mag_cal_cont_init(&s_mag_cont, &identity);
         }
     }
 }
@@ -167,7 +163,7 @@ set_and_persist_gate(uint8_t index, float e, float n, float heading_rad)
 }
 
 static void
-apply_gate_commands(void)
+apply_gate_commands(quat_t q)
 {
     app_cmd_t cmd;
     float e, n, ve, vn;
@@ -180,7 +176,20 @@ apply_gate_commands(void)
                 continue;
             }
             kf6_get_state(&e, &n, NULL, &ve, &vn, NULL);
-            float heading_rad = atan2f(vn, ve); /* travel direction */
+            /* Orient the gate perpendicular to the direction of travel.
+             * Course over ground (the velocity vector) is the truest
+             * crossing direction and needs no magnetometer, but it's pure
+             * noise at a standstill - so at or below walking pace fall
+             * back to the AHRS yaw (magnetometer-referenced heading, valid
+             * stationary), letting a gate be planted with the car parked
+             * and nose pointed down the track. */
+            float heading_rad;
+            if (sqrtf(ve * ve + vn * vn) >= LAP_GATE_COURSE_MIN_SPEED_MPS) {
+                heading_rad = atan2f(vn, ve); /* travel direction */
+            } else {
+                vec3_t fwd = quat_rotate(q, (vec3_t) {1.0f, 0.0f, 0.0f});
+                heading_rad = atan2f(fwd.y, fwd.x); /* vehicle heading */
+            }
             set_and_persist_gate(cmd.arg0, e, n, heading_rad);
         } else if (cmd.cmd == CAN_CMD_GATE_CLEAR) {
             if (cmd.arg0 == 0xFFU) {
@@ -304,12 +313,17 @@ imu_task_main(void *argument)
     kf6_init();
     gates_init();
     laptimer_init();
-    s_mag_cal_in_progress = false;
     /* Loads the persisted gate table (absolute lat/lon) into
      * s_stored_gates and the mag calibration; the gates are placed into
      * gates.c later, once the first fix sets the ENU origin. Falls back to
      * identity calibration / no gates if nothing was saved. */
-    flash_store_init(s_stored_gates, LAP_MAX_GATES, &s_mag_cal);
+    mag_cal_result_t loaded_cal;
+    flash_store_init(s_stored_gates, LAP_MAX_GATES, &loaded_cal);
+    /* A persisted cal seeds the background calibrator at GOOD so heading
+     * works from boot; the continuous sweep refines it and re-validates
+     * against course from there. */
+    mag_cal_cont_init(&s_mag_cont, &loaded_cal);
+    s_last_mag_save = 0U;
 
     uint32_t prev_tick = timebase_get_tick();
     float prev_e = 0.0f, prev_n = 0.0f;
@@ -345,13 +359,12 @@ imu_task_main(void *argument)
             if (lsm6dso32_read_mag(&m) == STATUS_OK && m.valid) {
                 vec3_t mv = apply_mount(m.mx_ut, m.my_ut, m.mz_ut);
 
-                if (s_mag_cal_in_progress) {
-                    mag_cal_feed(&s_mag_cal_acc, mv.x, mv.y, mv.z);
-                }
-                mag_cal_apply(&s_mag_cal, mv.x, mv.y, mv.z, &mx, &my, &mz);
+                mag_cal_cont_feed(&s_mag_cont, mv.x, mv.y, mv.z);
+                mag_cal_apply(mag_cal_cont_result(&s_mag_cont), mv.x, mv.y,
+                              mv.z, &mx, &my, &mz);
 
-                canbc_state_set_mag(mx, my, mz,
-                                     s_mag_cal_in_progress ? 1U : 2U);
+                canbc_state_set_mag(
+                    mx, my, mz, (uint8_t) mag_cal_cont_quality(&s_mag_cont));
             }
         }
 
@@ -366,7 +379,7 @@ imu_task_main(void *argument)
 
         handle_gps_fix();
         handle_wheelspeed(q);
-        apply_gate_commands();
+        apply_gate_commands(q);
 
         float e_m, n_m, u_m, ve_mps, vn_mps;
         kf6_get_state(&e_m, &n_m, &u_m, &ve_mps, &vn_mps, NULL);
@@ -412,6 +425,29 @@ imu_task_main(void *argument)
         float yaw_deg, pitch_deg, roll_deg;
         quat_to_euler_deg(q, &yaw_deg, &pitch_deg, &roll_deg);
         canbc_state_set_attitude(yaw_deg, pitch_deg, roll_deg, 0U);
+
+        /* Cross-check the mag-derived heading against course-over-ground,
+         * but only when moving fast enough for course to be meaningful
+         * (same floor as gate placement). This is what promotes the cal
+         * to VALIDATED. */
+        if (fused_speed_mps >= LAP_GATE_COURSE_MIN_SPEED_MPS) {
+            mag_cal_cont_observe_heading(
+                &s_mag_cont, yaw_deg * ((float) M_PI / 180.0f),
+                fused_course_deg * ((float) M_PI / 180.0f));
+        }
+
+        /* Persist an improved cal, but rate-limited: the background sweep
+         * only marks dirty on a material change, and once converged it
+         * stops changing - so in steady state this never writes. The
+         * interval floor caps flash wear during initial convergence. */
+        bool save_due =
+            (s_last_mag_save == 0U) ||
+            (xTaskGetTickCount() - s_last_mag_save) >=
+                pdMS_TO_TICKS(MAG_CAL_SAVE_MIN_INTERVAL_MS);
+        if (save_due && mag_cal_cont_take_dirty(&s_mag_cont)) {
+            flash_store_save_mag_cal(mag_cal_cont_result(&s_mag_cont));
+            s_last_mag_save = xTaskGetTickCount();
+        }
 
         canbc_state_set_imu_accel(a.x * 1000.0f, a.y * 1000.0f,
                                    a.z * 1000.0f);

@@ -6,7 +6,7 @@ This guide covers how to set up and use the lap timing system during testing and
 
 The GPS node automatically measures lap times and segment (sector) times by detecting when you cross invisible gates on the track. Gates are placed using the **steering wheel button** and persist across power cycles—once you set them, they stay set even if the car is turned off and moved.
 
-**The car must be moving at a reasonable speed for the system to work reliably.** If you're parked or moving very slowly, gates won't trigger.
+**Placing** a gate works whether you're parked or rolling (see *Placing gates while stationary* below). **Crossing** a gate to trigger timing naturally requires driving through it at speed—if you're parked or crawling, nothing will trigger during a lap.
 
 ## Setting up gates
 
@@ -35,6 +35,18 @@ The steering wheel lap button supports three actions based on press duration:
 4. And so on (up to 7 sector gates per start/finish)
 
 **The dashboard shows "Next sector: N"** to tell you which gate number will be placed on the next short press.
+
+### Placing gates while stationary
+
+A gate is a line drawn *across* your direction of travel. When you're moving, the node uses your actual direction of travel to orient it. When you're parked or crawling, it uses the **compass heading** instead—so you can set the start/finish line with the car stopped, as long as the **nose is pointed straight down the track** (the gate is drawn square to wherever the nose points).
+
+For this to be accurate the compass must be calibrated:
+
+- **It calibrates itself automatically** as you drive—no button sequence or special manoeuvre. Just drive a lap or two.
+- The dashboard's magnetometer status climbs **Uncalibrated → Collecting → Calibrated → Validated** as it learns. Once it reads **Calibrated** (ideally **Validated**, which means the compass now agrees with your GPS direction of travel), stationary placement is trustworthy.
+- The calibration is saved and reloaded on next power-up, so after the first good session it starts ready.
+
+**Rule of thumb:** on a fresh car, drive a lap before placing gates from a standstill. If in doubt, place gates while rolling—that never needs the compass.
 
 ### Clearing gates
 

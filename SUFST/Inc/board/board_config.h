@@ -58,6 +58,16 @@
  * wide enough to plausibly reach a neighbouring section. */
 #define LAP_GATE_HALF_WIDTH_M  2.0f
 #define LAP_MIN_LAP_TIME_MS    10000U /* reject re-crossings sooner than this */
+/* Gate placement orients the gate line perpendicular to the direction of
+ * travel (course over ground). Course is noise at a standstill, so at or
+ * below this speed the gate heading is taken from the AHRS yaw
+ * (magnetometer-referenced, valid stationary) instead - letting a gate be
+ * planted with the car parked, nose pointed down the track. ~7 km/h. */
+#define LAP_GATE_COURSE_MIN_SPEED_MPS 2.0f
+
+/* Floor between background mag-cal flash writes, to cap flash wear while
+ * the calibration is still converging (it stops writing once stable). */
+#define MAG_CAL_SAVE_MIN_INTERVAL_MS  60000U
 #define LAP_BUTTON_LONG_MS     1000U  /* long press: set start/finish */
 #define LAP_BUTTON_CLEAR_MS    5000U  /* very long press: clear all gates */
 

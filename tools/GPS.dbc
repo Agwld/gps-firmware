@@ -138,7 +138,7 @@ CM_ BO_ 1719 "100 Hz calibrated body-frame gyroscope. 0.0625 dps/LSB, range +-20
 CM_ BO_ 1720 "1 Hz temperature summary: MCP9800 board ambient, IMU die temp, MCU internal temp.";
 CM_ BO_ 1721 "1 Hz node health: uptime, fault bits, retry counters, CPU load.";
 CM_ BO_ 1722 "10 Hz raw magnetometer, diagnostic only (not fed into AHRS directly). Units are uT*10, not raw sensor LSB, so the frame is self-describing.";
-CM_ SG_ 1722 cal_status "0 uncalibrated, 1 calibrating, 2 calibrated.";
+CM_ SG_ 1722 cal_status "Continuous background calibration state: 0 uncalibrated, 1 collecting (candidate, still sweeping the heading circle), 2 calibrated (coverage good), 3 validated (also agrees with GPS course-over-ground).";
 CM_ BO_ 1723 "1 Hz ENU frame origin (absolute lat/lon). The gates and the node's own ENU are relative to this; re-anchored at each power-up's first fix, so the dash must re-read it rather than assume it's fixed.";
 CM_ BO_ 1724 "Lap gate, one slot per frame round-robined (~5 Hz aggregate, whole set in ~1.6 s). Position is ENU metres relative to GPS_Frame_Origin. index 0 = start/finish, 1-7 = sectors; gate_flags bit0 = valid (0 => empty/cleared slot).";
 CM_ SG_ 1724 gate_index "Which gate slot this frame carries (plain data field, not a multiplexor).";

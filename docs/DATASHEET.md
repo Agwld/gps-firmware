@@ -199,8 +199,9 @@ Command codes (in GPS_Command.cmd_id):
 0x02 = CAN_CMD_GATE_CLEAR         (clear gate at slot arg0)
 0x20 = CAN_CMD_CONFIG_SAVE        (trigger flash compaction)
 0xFF = CAN_CMD_GATE_CLEAR_ALL     (clear all gates)
-0x40 = CAN_CMD_MAG_CAL_START      (start mag calibration)
-0x41 = CAN_CMD_MAG_CAL_STOP       (stop mag calibration)
+0x10 = CAN_CMD_MAG_CAL_START      (force a fresh mag recalibration; cal is
+                                   otherwise continuous/automatic)
+0x11 = CAN_CMD_MAG_CAL_STOP       (no-op, retained for compatibility)
 ```
 
 #### Signal scaling
@@ -249,7 +250,7 @@ Clear marker: kind=GATE_CLEAR_ALL wipes all gates
 | **Sensor fusion** | ✓ Complete | Mahony AHRS + 6-state Kalman filter |
 | **Gate persistence** | ✓ Complete | Absolute lat/lon, survives power-cycle-and-move |
 | **CAN broadcast** | ✓ Complete | 15 message types, 1 Hz to 100 Hz sampling |
-| **Magnetic calibration** | ✓ Complete | Hard-iron + soft-iron correction |
+| **Magnetic calibration** | ✓ Complete | Continuous/automatic; hard-iron + soft-iron (horizontal), GPS-course validated |
 | **NMEA synthesis** | ✓ Complete | MoTeC datalogger compatibility |
 | **Event time-marking** | ✓ Complete | GPS TIM-TM2 for button edge stamping |
 | **Wheel-speed aiding** | ✓ Designed | Code in place; needs VCU integration (not in critical path) |

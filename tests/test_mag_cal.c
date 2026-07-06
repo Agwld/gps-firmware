@@ -155,12 +155,138 @@ test_identity_is_a_no_op(void)
     CHECK_NEAR("identity: z", z, 5.0f, 1e-6f);
 }
 
+/* Simulate a level car yawing through `revs` full turns, `pts` samples
+ * each: the horizontal field traces a circle in the vehicle x/y plane
+ * (distorted by hard-iron bias + per-axis gain), while the vertical axis
+ * sees a constant field - exactly the case that a full-sphere min/max
+ * can't finish but the continuous horizontal calibrator must. */
+static void
+feed_level_revolutions(mag_cal_cont_t *c, const float bias[3],
+                       float gain_x, float gain_y, int pts, int revs)
+{
+    const float H = 40.0f; /* horizontal field magnitude, uT */
+    const float Z = 30.0f; /* vertical component (constant when level) */
+    for (int r = 0; r < revs; r++) {
+        for (int i = 0; i < pts; i++) {
+            float psi = (float) i / (float) pts * 2.0f * (float) M_PI;
+            float raw_x = H * cosf(psi) * gain_x + bias[0];
+            float raw_y = H * sinf(psi) * gain_y + bias[1];
+            float raw_z = Z + bias[2];
+            mag_cal_cont_feed(c, raw_x, raw_y, raw_z);
+        }
+    }
+}
+
+/* Driving a level car in circles must reach GOOD and recover the
+ * horizontal hard-iron bias, even though the vertical axis never moves. */
+static void
+test_cont_good_from_level_driving(void)
+{
+    const float bias[3] = {8.0f, -6.0f, 15.0f};
+    mag_cal_result_t identity;
+    mag_cal_identity(&identity);
+
+    mag_cal_cont_t c;
+    mag_cal_cont_init(&c, &identity);
+    if (mag_cal_cont_quality(&c) != MAG_CAL_UNCALIBRATED) {
+        fprintf(stderr, "FAIL: identity seed should start UNCALIBRATED\n");
+        s_failures++;
+    }
+
+    feed_level_revolutions(&c, bias, 1.0f, 1.3f, 200, 2);
+
+    if (mag_cal_cont_quality(&c) < MAG_CAL_GOOD) {
+        fprintf(stderr, "FAIL: level driving did not reach GOOD\n");
+        s_failures++;
+    }
+    if (!mag_cal_cont_take_dirty(&c)) {
+        fprintf(stderr, "FAIL: reaching GOOD should mark dirty\n");
+        s_failures++;
+    }
+    if (mag_cal_cont_take_dirty(&c)) {
+        fprintf(stderr, "FAIL: dirty should clear after being taken\n");
+        s_failures++;
+    }
+
+    const mag_cal_result_t *cal = mag_cal_cont_result(&c);
+    CHECK_NEAR("cont recovered bias x", cal->bias[0], bias[0], 1.0f);
+    CHECK_NEAR("cont recovered bias y", cal->bias[1], bias[1], 1.0f);
+    /* Vertical axis uncalibratable from level driving: left at identity. */
+    CHECK_NEAR("cont vertical bias untouched", cal->bias[2], 0.0f, 1e-6f);
+    CHECK_NEAR("cont vertical scale untouched", cal->scale[2], 1.0f, 1e-6f);
+
+    /* Horizontal scales equalise the per-axis gain (gy was 1.3x gx). */
+    float cx0, cy0, cz0, cx1, cy1, cz1;
+    mag_cal_apply(cal, 40.0f + bias[0], bias[1], 0.0f, &cx0, &cy0, &cz0);
+    mag_cal_apply(cal, bias[0], 40.0f * 1.3f + bias[1], 0.0f, &cx1, &cy1,
+                  &cz1);
+    CHECK_NEAR("cont equalised x/y radius", cx0, cy1, 1.0f);
+}
+
+/* A non-identity calibration restored from flash is trusted immediately. */
+static void
+test_cont_flash_seed_starts_good(void)
+{
+    mag_cal_result_t seed = {{5.0f, 5.0f, 5.0f}, {1.1f, 1.1f, 1.1f}};
+    mag_cal_cont_t c;
+    mag_cal_cont_init(&c, &seed);
+    if (mag_cal_cont_quality(&c) != MAG_CAL_GOOD) {
+        fprintf(stderr, "FAIL: flash-seeded cal should start GOOD\n");
+        s_failures++;
+    }
+    if (mag_cal_cont_take_dirty(&c)) {
+        fprintf(stderr, "FAIL: a fresh seed should not be dirty\n");
+        s_failures++;
+    }
+}
+
+/* Course cross-check: a heading that tracks course with a constant offset
+ * reaches VALIDATED; a heading uncorrelated with course never does. */
+static void
+test_cont_course_validation(void)
+{
+    const float bias[3] = {8.0f, -6.0f, 15.0f};
+    mag_cal_result_t identity;
+    mag_cal_identity(&identity);
+
+    mag_cal_cont_t good;
+    mag_cal_cont_init(&good, &identity);
+    feed_level_revolutions(&good, bias, 1.0f, 1.3f, 200, 2);
+
+    /* Constant 0.5 rad offset (declination + mounting) -> validates. */
+    for (int i = 0; i < 200; i++) {
+        float yaw = (float) i * 0.11f;
+        mag_cal_cont_observe_heading(&good, yaw, yaw + 0.5f);
+    }
+    if (mag_cal_cont_quality(&good) != MAG_CAL_VALIDATED) {
+        fprintf(stderr, "FAIL: constant-offset heading should VALIDATE\n");
+        s_failures++;
+    }
+
+    /* Uncorrelated heading vs course -> stays GOOD, never validates. */
+    mag_cal_cont_t bad;
+    mag_cal_cont_init(&bad, &identity);
+    feed_level_revolutions(&bad, bias, 1.0f, 1.3f, 200, 2);
+    for (int i = 0; i < 500; i++) {
+        float yaw = fmodf((float) i * 0.7f, 2.0f * (float) M_PI);
+        float course = fmodf((float) i * 2.3f, 2.0f * (float) M_PI);
+        mag_cal_cont_observe_heading(&bad, yaw, course);
+    }
+    if (mag_cal_cont_quality(&bad) == MAG_CAL_VALIDATED) {
+        fprintf(stderr, "FAIL: uncorrelated heading must not VALIDATE\n");
+        s_failures++;
+    }
+}
+
 int
 main(void)
 {
     test_recovers_known_bias_and_scale();
     test_rejects_insufficient_data();
     test_identity_is_a_no_op();
+    test_cont_good_from_level_driving();
+    test_cont_flash_seed_starts_good();
+    test_cont_course_validation();
 
     if (s_failures == 0) {
         printf("test_mag_cal: all tests passed\n");

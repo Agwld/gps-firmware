@@ -263,7 +263,7 @@ Five tasks run statically allocated, priority-based scheduling:
   5. Apply pending GPS/wheelspeed corrections (from queues)
   6. Check gate crossings
   7. Update lap state machine
-  8. (Optional) feed to magnetometer calibration accumulator
+  8. Feed the magnetometer sample to the continuous background calibrator (and cross-check heading vs GPS course when moving)
 - **Output**: fused position/velocity to `canbc` state (mutex-guarded)
 - **Stack**: 2 KB
 
@@ -340,19 +340,17 @@ When the first GPS fix arrives:
 
 ## Magnetic calibration
 
-The magnetometer experiences hard-iron (constant bias) and soft-iron (scale imbalance) distortion. Calibration runs via a user command:
+The magnetometer experiences hard-iron (constant bias) and soft-iron (scale imbalance) distortion. Calibration runs **continuously in the background** — no driver action needed:
 
-1. **Start**: `CAN_CMD_MAG_CAL_START` → `imu_task` begins accumulating min/max per axis
-2. **Drive**: Car rotates through various orientations (ideally a full sphere)
-3. **Stop**: `CAN_CMD_MAG_CAL_STOP` → `imu_task` computes bias and scale:
-   ```
-   bias_x = (max_x + min_x) / 2
-   scale_x = (max_x - min_x) / (mean of all ranges)
-   ```
-4. **Persist**: Result written to flash (flash_store_record with kind=MAG_CAL)
-5. **Apply**: Calibration applied to every magnetometer read before AHRS
+1. **Feed**: every raw sample flows into a rolling window (`mag_cal_cont_feed` in [`mag_cal.c`](../SUFST/Src/imu/mag_cal.c)), which tracks how much of the heading circle has been swept (12 sectors).
+2. **Finalise**: once a window covers ≥9/12 sectors, it commits a new **horizontal** (x/y) bias/scale — all a heading needs. The vertical axis can't be calibrated from a level car (it sees a constant field), so its terms are carried over from flash. The window then resets, so a magnetic transient taints at most one window (self-healing).
+3. **Validate**: whenever the car is moving above the course-valid speed, the fused heading is cross-checked against GPS course-over-ground. Tight circular agreement (constant offset = declination + mounting) promotes the state to *validated*.
+4. **Quality flag** (`GPS_Mag.cal_status`): 0 uncalibrated → 1 collecting → 2 calibrated → 3 validated. A consumer wanting a trustworthy heading gates on ≥2.
+5. **Persist**: an improved calibration is written to flash (rate-limited to bound wear), and restored at boot as the seed — so heading works immediately, starting at *calibrated*, before re-validating against course.
 
-Calibration is the "basic" 3-axis min/max method, not a full 9-parameter ellipsoid fit. Good enough for a first pass; a full ellipsoid fit is a natural upgrade.
+`CAN_CMD_MAG_CAL_START` remains as a "force a fresh rebuild" override (discard the current cal and re-sweep, e.g. after new hardware is fitted near the sensor); `CAN_CMD_MAG_CAL_STOP` is now a no-op.
+
+The underlying model is the "basic" axis-aligned min/max method, not a full 9-parameter ellipsoid fit. Good enough for a heading; a full ellipsoid fit is a natural upgrade.
 
 ## Error handling & robustness
 

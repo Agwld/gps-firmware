@@ -48,8 +48,9 @@ SYS_EVENT_FAULT_BITS = (1 << 5) | (1 << 6) | (1 << 7)
 #: SUFST/Inc/canbus/can_defs.h: GPS_Mag.cal_status.
 MAG_CAL_STATUS_NAMES: dict[int, str] = {
     0: "Uncalibrated",
-    1: "Calibrating",
+    1: "Collecting",
     2: "Calibrated",
+    3: "Validated (vs course)",
 }
 
 #: SUFST/Inc/canbus/can_defs.h: CAN_LAP_EVENT_* (Lap_Event.type).
