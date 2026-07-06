@@ -415,7 +415,7 @@ The firmware is designed to run soft real-time on a 170 MHz STM32G431:
 | `imu_task` | 104 Hz | ~18% | SPI read + AHRS + KF predict + lap check |
 | `gps_task` | ~1 Hz (varies) | ~3% | UBX parsing, PVT handling, boot config |
 | `can_task` | ~100 Hz (staggered) | ~8% | CAN TX (periodic broadcast + events) |
-| `aux_task` | ~1 Hz | ~1% | NMEA synthesis, RTCM forwarding |
+| `aux_task` | ~1 Hz | ~1% | NMEA synthesis to MoTeC (USART3 TX) |
 | `sys_task` | 10 Hz | ~2% | Buttons, LEDs, temperature |
 | **Idle** | — | ~68% | CPU available for other systems |
 | **Total load** | — | **~32%** | Plenty of headroom |
