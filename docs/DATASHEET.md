@@ -8,7 +8,7 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 
 | Component | Spec |
 |-----------|------|
-| Part | STM32G431CB (128 KB flash, 32 KB SRAM) or C8 (64 KB flash) variant |
+| Part | STM32G431CB (128 KB flash, 32 KB SRAM) — required |
 | Clock | 170 MHz internal RC oscillator (calibrated) |
 | Flash | 126 KB usable (last 2 KB reserved for gate/mag-cal storage) |
 | SRAM | 32 KB total (16 KB for task stacks + queues, 16 KB for buffers) |
@@ -116,17 +116,14 @@ Complete technical specifications for the STAG 12 GPS mainboard and firmware.
 
 ## Firmware specifications
 
-### Build variants
+### Flash / SRAM budget
 
-| Variant | Flash | SRAM | Release size | Debug size | Notes |
-|---------|-------|------|--------------|------------|-------|
-| **CB (default)** | 128 KB | 32 KB | ~58 KB (45%) | ~94 KB (73%) | Full feature set, recommended |
-| **C8** | 64 KB | 32 KB | ~58 KB (92%) | N/A | Minimal feature set, Debug doesn't fit |
+The board requires the **STM32G431CB** (128 KB flash, 32 KB SRAM):
 
-Selected at compile time:
-```bash
-cmake --preset Release -DGPS_MCU_VARIANT=CB   # or C8
-```
+| Build | Size | Flash used |
+|-------|------|------------|
+| Release (`-Os`) | ~58 KB | 45% of 128 KB |
+| Debug (`-O0`) | ~94 KB | 73% of 128 KB |
 
 ### Timing accuracy
 
@@ -230,7 +227,7 @@ Command codes (in GPS_Command.cmd_id):
 | Firmware (text) | 0x08000000 | ~58 KB | STM32 application |
 | Firmware (RO data) | 0x0800E800 | varies | Constants, lookup tables |
 | Reserved gap | varies | — | Linker script gap |
-| **Gate store** | **0x1FC00** (CB) or **0x0FC00** (C8) | **2 KB** | Append-only gate + mag-cal log |
+| **Gate store** | **0x0801F800** | **2 KB** | Append-only gate + mag-cal log (last flash page) |
 | **Blank flash** | varies | remainder | Available for future use |
 
 Gate store records:

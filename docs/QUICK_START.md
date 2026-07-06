@@ -78,7 +78,7 @@ Once programmed:
    ```bash
    arm-none-eabi-size build/gps_firmware.elf
    ```
-   Should show CODE < 65536 (fits C8 variant) or CODE < 131072 (CB variant)
+   Should show CODE well under 131072 (128 KB flash on the STM32G431CB)
 
 2. **Inspect the binary**:
    ```bash

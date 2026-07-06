@@ -11,9 +11,6 @@
  * CCMRAM (10 KB at 0x10000000) holds task stacks, hot fusion state and the
  * RAM-executed flash program routines (.ccmfunc) so they survive flash
  * stalls during page erase.
- *
- * See STM32G431X8_FLASH.ld for the smaller-flash (C8, 64 KB) variant of
- * this same script, selectable via -DGPS_MCU_VARIANT=C8.
  */
 
 ENTRY(Reset_Handler)

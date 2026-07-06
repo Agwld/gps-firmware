@@ -157,7 +157,7 @@ All crossing times are expressed in **GPS time-of-week** (iTOW, 0–604799999 ms
 
 ### Flash storage format
 
-Gates are stored in the **last 2 KB page of flash** (address depends on variant: 0x1F800 for CB, 0x0F800 for C8) as an **append-only log**:
+Gates are stored in the **last 2 KB page of flash** (0x1F800 on the STM32G431CB's 128 KB) as an **append-only log**:
 
 ```c
 struct flash_store_record {

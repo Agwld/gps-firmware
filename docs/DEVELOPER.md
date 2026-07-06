@@ -89,14 +89,9 @@ cmake --build build-host
 ctest --test-dir build-host -V
 ```
 
-### Custom build variants
+### Custom build options
 
-To select the MCU variant (C8 = 64 KB, CB = 128 KB):
-
-```bash
-cmake --preset Release -DGPS_MCU_VARIANT=CB   # (default, recommended)
-cmake --preset Release -DGPS_MCU_VARIANT=C8   # Minimal flash
-```
+The board requires the **STM32G431CB** (128 KB flash); the linker script and flash layout are fixed to that part.
 
 To set the GPS update rate (default 20 Hz):
 
@@ -130,9 +125,9 @@ arm-none-eabi-objdump -h build/gps_firmware.elf
 arm-none-eabi-nm -S --size-sort build/gps_firmware.elf | tail -20
 ```
 
-Current firmware:
-- **Release**: ~58 KB text + data (45% of 128 KB CB variant)
-- **Debug**: ~94 KB (75% of 128 KB CB variant, doesn't fit C8)
+Current firmware (STM32G431CB, 128 KB flash):
+- **Release**: ~58 KB text + data (45% of 128 KB)
+- **Debug**: ~94 KB (73% of 128 KB)
 
 ## Testing
 
