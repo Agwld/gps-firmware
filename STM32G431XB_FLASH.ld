@@ -2,15 +2,25 @@
  * Linker script for STM32G431CBTx (128 KB flash / 32 KB RAM) - the fitted
  * part on the gps-mainboard (rev 1.0.0).
  *
- * FLASH is 126 KB: the last 2 KB page (0x0801F800) is reserved for the
- * flash_store config/gate records and must never hold code. Kept out of
- * the FLASH memory region entirely (rather than just documented) so the
- * linker can never place a section there.
+ * FLASH is 124 KB: the last two 2 KB pages (0x0801F000-0x0801FFFF) are
+ * reserved for the flash_store config/gate records and must never hold
+ * code. Two pages, not one, so the store can rewrite the compacted state
+ * into a spare page and only erase the old one once that rewrite has
+ * fully landed (flash_store_erase_and_compact()) - erasing its only copy
+ * before rewriting it would lose every gate and the mag-cal outright if
+ * a brownout/reset landed mid-rewrite. Kept out of the FLASH memory
+ * region entirely (rather than just documented) so the linker can never
+ * place a section there.
  *
  * RAM   = SRAM1 (16 KB) + SRAM2 (6 KB), contiguous at 0x20000000.
  * CCMRAM (10 KB at 0x10000000) holds task stacks, hot fusion state and the
- * RAM-executed flash program routines (.ccmfunc) so they survive flash
- * stalls during page erase.
+ * RAM-executed flash program/erase wrapper functions (.ccmfunc). NOTE:
+ * this does NOT make the flash write/erase itself stall-free - the HAL
+ * routines these wrappers call (HAL_FLASH_Program, HAL_FLASHEx_Erase)
+ * still execute from FLASH, so the CPU fetch unit still stalls for the
+ * duration of the operation regardless of where the wrapper lives; see
+ * the comment on flash_store_program_record() in flash_store.c for why
+ * this is accepted rather than fixed.
  */
 
 ENTRY(Reset_Handler)
@@ -22,7 +32,7 @@ _Min_Stack_Size = 0x400;   /* MSP: startup + ISRs */
 
 MEMORY
 {
-  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 126K
+  FLASH  (rx)  : ORIGIN = 0x08000000, LENGTH = 124K
   RAM    (xrw) : ORIGIN = 0x20000000, LENGTH = 22K
   CCMRAM (xrw) : ORIGIN = 0x10000000, LENGTH = 10K
 }

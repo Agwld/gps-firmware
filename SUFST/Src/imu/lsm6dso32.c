@@ -26,7 +26,8 @@
 #define REG_CTRL1_XL        0x10U
 #define REG_CTRL2_G         0x11U
 #define REG_CTRL3_C         0x12U
-#define REG_SENSOR_HUB1     0x02U /* IIS2MDC OUTX_L .. OUTZ_H, 6 bytes */
+#define REG_SENSOR_HUB1     0x02U /* IIS2MDC STATUS_REG, then OUTX_L..OUTZ_H
+                                   * (7 bytes total, see lsm6dso32_mag_init) */
 
 #define WHO_AM_I_VALUE 0x6CU
 
@@ -39,6 +40,14 @@
 #define REG_SLV0_ADD      0x15U
 #define REG_SLV0_SUBADD   0x16U
 #define REG_SLV0_CONFIG   0x17U
+#define REG_DATAWRITE_SLV0 0x21U
+
+/* STATUS_MASTER_MAINPAGE: STATUS_MASTER (0x22, SHUB bank) mirrored into
+ * the main bank at 0x39, readable without FUNC_CFG_SHUB_REG_ACCESS set
+ * (AN5192 Section 7.2.2) - used to poll a one-shot write's completion
+ * without repeatedly toggling FUNC_CFG_ACCESS. */
+#define REG_STATUS_MASTER_MAINPAGE 0x39U
+#define STATUS_MASTER_WR_ONCE_DONE (1U << 7)
 
 #define MASTER_CONFIG_MASTER_ON   (1U << 2)
 /* AN5192 Section 7.2.1: "The WRITE_ONCE bit must be set to 1 if slave 0
@@ -47,10 +56,44 @@
  * example (Section 7.4) sets this bit alongside MASTER_ON. */
 #define MASTER_CONFIG_WRITE_ONCE (1U << 6)
 
-/* IIS2MDC (magnetometer) I2C address and output register */
-#define IIS2MDC_I2C_ADDR   0x1EU
-#define IIS2MDC_OUTX_L_REG 0x68U
-#define IIS2MDC_READ_LEN   6U
+/* IIS2MDC (magnetometer) I2C address and registers. The sensor-hub SLV0
+ * read starts at STATUS_REG rather than straight at OUTX_L_REG: the
+ * IIS2MDC's own ODR (100 Hz) doesn't line up 1:1 with the 104 Hz
+ * accel/gyro trigger driving the sensor-hub read, so without a
+ * data-ready check some read cycles would re-fetch the same latched
+ * output word and lsm6dso32_read_mag() would report it as a fresh
+ * sample - Zyxda in STATUS_REG is exactly the bit the datasheet provides
+ * to detect that. */
+#define IIS2MDC_I2C_ADDR    0x1EU
+#define IIS2MDC_STATUS_REG  0x67U
+#define IIS2MDC_OUTX_L_REG  0x68U
+#define IIS2MDC_READ_LEN    7U /* STATUS_REG + 6 data bytes */
+#define IIS2MDC_STATUS_ZYXDA (1U << 3)
+
+/* IIS2MDC bring-up registers, one-shot-written via the sensor-hub master
+ * before the continuous read is set up - see AN5192 Section 7.4's worked
+ * LIS2MDL example (register-identical to the IIS2MDC). Without this the
+ * sensor stays in its power-on-default idle mode (CFG_REG_A MD[1:0]=11)
+ * and never converts. */
+#define IIS2MDC_CFG_REG_A 0x60U
+#define IIS2MDC_CFG_REG_B 0x61U
+#define IIS2MDC_CFG_REG_C 0x62U
+
+/* CFG_REG_A = COMP_TEMP_EN(b7, mandatory per the datasheet) |
+ * ODR[1:0]=11 (100 Hz, b3:2) | MD[1:0]=00 (continuous mode, b1:0). */
+#define IIS2MDC_CFG_REG_A_VAL 0x8CU
+/* CFG_REG_B = OFF_CANC(b1): enable offset cancellation. */
+#define IIS2MDC_CFG_REG_B_VAL 0x02U
+/* CFG_REG_C = BDU(b4): block data update, matching CTRL3_C's BDU on the
+ * main accel/gyro. */
+#define IIS2MDC_CFG_REG_C_VAL 0x10U
+
+/* Poll bound for a one-shot sensor-hub write's WR_ONCE_DONE: the write
+ * completes on the next accel/gyro trigger (<=104 Hz => <=~10 ms since
+ * lsm6dso32_init() already started them), so 100 iters * 2 ms is
+ * generous headroom against a NACKed/absent IIS2MDC hanging bring-up
+ * forever rather than a real timing bound. */
+#define MAG_WRITE_POLL_MAX_ITERS 100U
 
 /* CTRL3_C: BDU (block data update, bit6) so a multi-byte read can't
  * straddle a sensor-side update, and IF_INC (bit2, register address
@@ -228,18 +271,97 @@ lsm6dso32_init(void)
     return STATUS_OK;
 }
 
+/* One-shot pass-through write of `val` to IIS2MDC register `reg` via the
+ * sensor-hub master, per AN5192 Section 7.4. Blocks (polling
+ * STATUS_MASTER_MAINPAGE) until the write actually lands on the far side
+ * of the I2C bus, since the caller chains several of these and each one
+ * must complete before the next reconfigures SLV0. Leaves FUNC_CFG_ACCESS
+ * cleared (main bank) on return either way. */
+static status_t
+mag_write_reg(uint8_t reg, uint8_t val)
+{
+    status_t st = write_reg(REG_FUNC_CFG_ACCESS, FUNC_CFG_SHUB_REG_ACCESS);
+    if (st == STATUS_OK) {
+        st = write_reg(REG_SLV0_ADD, (uint8_t) (IIS2MDC_I2C_ADDR << 1));
+    }
+    if (st == STATUS_OK) {
+        st = write_reg(REG_SLV0_SUBADD, reg);
+    }
+    if (st == STATUS_OK) {
+        st = write_reg(REG_SLV0_CONFIG, 0x00U);
+    }
+    if (st == STATUS_OK) {
+        st = write_reg(REG_DATAWRITE_SLV0, val);
+    }
+    if (st == STATUS_OK) {
+        st = write_reg(REG_MASTER_CONFIG,
+                        MASTER_CONFIG_MASTER_ON | MASTER_CONFIG_WRITE_ONCE);
+    }
+    /* STATUS_MASTER_MAINPAGE (0x39) is a main-bank register - drop back
+     * regardless of the above outcome so it's pollable next. */
+    write_reg(REG_FUNC_CFG_ACCESS, 0x00U);
+    if (st != STATUS_OK) {
+        return st;
+    }
+
+    uint8_t status = 0U;
+    for (uint32_t iters = 0U;; iters++) {
+        if (read_regs(REG_STATUS_MASTER_MAINPAGE, &status, 1U) !=
+            STATUS_OK) {
+            return STATUS_ERROR;
+        }
+        if ((status & STATUS_MASTER_WR_ONCE_DONE) != 0U) {
+            break;
+        }
+        if (iters >= MAG_WRITE_POLL_MAX_ITERS) {
+            return STATUS_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(2U));
+    }
+
+    /* Disable the I2C master before the next reconfiguration - AN5192's
+     * one-shot write routine (Section 7.4, steps 8-10) requires this plus
+     * a >=300 us settle before FUNC_CFG_ACCESS is touched again; the
+     * scheduler tick below is far more than that. SHUB_PU_EN stays clear
+     * throughout (external pull-ups, see lsm6dso32_mag_init()). */
+    st = write_reg(REG_FUNC_CFG_ACCESS, FUNC_CFG_SHUB_REG_ACCESS);
+    if (st == STATUS_OK) {
+        st = write_reg(REG_MASTER_CONFIG, 0x00U);
+    }
+    write_reg(REG_FUNC_CFG_ACCESS, 0x00U);
+    vTaskDelay(pdMS_TO_TICKS(1U));
+    return st;
+}
+
 status_t
 lsm6dso32_mag_init(void)
 {
+    /* Bring the IIS2MDC out of its power-on-default idle mode
+     * (CFG_REG_A default MD[1:0]=11, datasheet Table 26) into continuous
+     * conversion - without this the sensor never converts and the
+     * sensor-hub read below just latches a constant/zero word forever.
+     * Three one-shot writes, per AN5192 Section 7.4's worked LIS2MDL
+     * example (register-identical to the IIS2MDC). */
+    status_t st = mag_write_reg(IIS2MDC_CFG_REG_A, IIS2MDC_CFG_REG_A_VAL);
+    if (st == STATUS_OK) {
+        st = mag_write_reg(IIS2MDC_CFG_REG_B, IIS2MDC_CFG_REG_B_VAL);
+    }
+    if (st == STATUS_OK) {
+        st = mag_write_reg(IIS2MDC_CFG_REG_C, IIS2MDC_CFG_REG_C_VAL);
+    }
+    if (st != STATUS_OK) {
+        return st;
+    }
+
     if (write_reg(REG_FUNC_CFG_ACCESS, FUNC_CFG_SHUB_REG_ACCESS) !=
         STATUS_OK) {
         return STATUS_ERROR;
     }
 
-    status_t st = write_reg(REG_SLV0_ADD, (uint8_t) ((IIS2MDC_I2C_ADDR << 1) |
-                                                       0x01U));
+    st = write_reg(REG_SLV0_ADD, (uint8_t) ((IIS2MDC_I2C_ADDR << 1) |
+                                             0x01U));
     if (st == STATUS_OK) {
-        st = write_reg(REG_SLV0_SUBADD, IIS2MDC_OUTX_L_REG);
+        st = write_reg(REG_SLV0_SUBADD, IIS2MDC_STATUS_REG);
     }
     if (st == STATUS_OK) {
         st = write_reg(REG_SLV0_CONFIG, IIS2MDC_READ_LEN);
@@ -293,15 +415,24 @@ lsm6dso32_read(lsm6dso32_sample_t *out)
 status_t
 lsm6dso32_read_mag(lsm6dso32_mag_sample_t *out)
 {
-    uint8_t buf[6];
+    uint8_t buf[7]; /* IIS2MDC STATUS_REG, then OUTX_L..OUTZ_H */
     if (read_regs(REG_SENSOR_HUB1, buf, sizeof(buf)) != STATUS_OK) {
         out->valid = false;
         return STATUS_ERROR;
     }
 
-    int16_t mx = (int16_t) (uint16_t) (buf[0] | (buf[1] << 8));
-    int16_t my = (int16_t) (uint16_t) (buf[2] | (buf[3] << 8));
-    int16_t mz = (int16_t) (uint16_t) (buf[4] | (buf[5] << 8));
+    /* Zyxda (new-data) gate: the IIS2MDC's 100 Hz ODR doesn't line up
+     * 1:1 with the 104 Hz accel/gyro trigger driving this sensor-hub
+     * read, so without this check some cycles would silently re-read
+     * the same latched output word and report it as a fresh sample. */
+    if ((buf[0] & IIS2MDC_STATUS_ZYXDA) == 0U) {
+        out->valid = false;
+        return STATUS_OK;
+    }
+
+    int16_t mx = (int16_t) (uint16_t) (buf[1] | (buf[2] << 8));
+    int16_t my = (int16_t) (uint16_t) (buf[3] | (buf[4] << 8));
+    int16_t mz = (int16_t) (uint16_t) (buf[5] | (buf[6] << 8));
 
     out->mx_ut = (float) mx * IIS2MDC_SENSITIVITY_UT_PER_LSB;
     out->my_ut = (float) my * IIS2MDC_SENSITIVITY_UT_PER_LSB;

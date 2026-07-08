@@ -1,11 +1,13 @@
 /**
  * @file    flash_store.h
- * @brief   Append-only gate/mag-cal persistence in the last flash page.
+ * @brief   Append-only gate/mag-cal persistence across the last two flash
+ *          pages (A/B redundant - see flash_store_erase_and_compact()).
  *
  * Record layout and scan/restore logic are pure C and host-testable
- * against a plain in-memory buffer standing in for the flash page; only
+ * against a plain in-memory buffer standing in for a flash page; only
  * the actual erase/program calls (flash_store_save_*(),
- * flash_store_erase_and_compact()) touch real flash and are target-only.
+ * flash_store_erase_and_compact()) touch real flash, span both pages,
+ * and are target-only.
  */
 
 #ifndef FLASH_STORE_H
@@ -35,7 +37,14 @@ extern "C" {
 #define FLASH_STORE_KIND_GATE_CLEAR_ALL 3U
 
 typedef struct {
-    uint8_t kind;
+    /* _Alignas on the first member (C11 forbids it on the typedef itself)
+     * forces the whole struct's alignment to 8: flash_store_program_record()
+     * reinterprets a record as an array of uint64_t doublewords, which is
+     * undefined behaviour if the struct is only naturally 4-byte-aligned
+     * (its strictest member otherwise being the uint32_t crc/float
+     * payload) - benign in practice on this Cortex-M4 (LDRD tolerates
+     * 4-byte alignment) but worth being exact about. */
+    _Alignas(8) uint8_t kind;
     uint8_t key;      /* gate index for KIND_GATE; unused (0) otherwise */
     uint8_t gate_valid; /* KIND_GATE: 1 = set, 0 = a persisted "cleared"
                          * marker (so a clear survives a power cycle);
@@ -45,6 +54,15 @@ typedef struct {
     uint32_t crc; /* CRC32 (reflected, poly 0xEDB88320) over every
                    * preceding byte of the record */
 } flash_store_record_t;
+
+/* flash_store_program_record() reinterprets a record as an array of
+ * uint64_t doublewords (STM32 flash programs in 8-byte units) and
+ * flash_store_find_next_slot()/flash_store_restore() index the flash page
+ * in FLASH_STORE_RECORD_SIZE strides - both silently break if the struct
+ * layout and the byte-count macro ever drift apart (e.g. a field added
+ * without updating FLASH_STORE_RECORD_SIZE, or vice versa). */
+_Static_assert(sizeof(flash_store_record_t) == FLASH_STORE_RECORD_SIZE,
+               "flash_store_record_t size must equal FLASH_STORE_RECORD_SIZE");
 
 /* A restored gate slot, in ABSOLUTE lat/lon (not ENU) so it reproduces
  * regardless of where the ENU origin lands on the next power-up. Stored
@@ -128,11 +146,14 @@ status_t flash_store_save_gates_cleared_all(void);
 status_t flash_store_save_mag_cal(const mag_cal_result_t *cal);
 
 /**
- * @brief Erase the page and rewrite only the current (latest-per-key)
- *        records - reclaims space from superseded history. The erase
- *        itself takes tens of ms with flash reads stalled, so the
- *        caller must only invoke this when it judges it safe to do so
- *        (e.g. vehicle stationary), never from a time-critical path.
+ * @brief Rewrite only the current (latest-per-key) records into the spare
+ *        of the two flash_store pages, then erase the old one - reclaims
+ *        space from superseded history without ever leaving both copies
+ *        erased/partial at once (a reset mid-compaction can be resumed
+ *        from either page, see flash_store_init()). Each erase takes tens
+ *        of ms with flash reads stalled, so the caller must only invoke
+ *        this when it judges it safe to do so (e.g. vehicle stationary),
+ *        never from a time-critical path.
  */
 status_t flash_store_erase_and_compact(void);
 #endif

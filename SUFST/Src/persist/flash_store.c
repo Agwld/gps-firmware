@@ -226,24 +226,80 @@ flash_store_restore(const uint8_t *page, uint32_t page_size,
 so the reserved page tracks the flash size the linker script was built for."
 #endif
 
-/* Last 2 KB page of flash on the STM32G431CB (128 KB) - this must stay in
- * lockstep with the FLASH region length in STM32G431XB_FLASH.ld, which is
- * why both derive from the single GPS_FLASH_TOTAL_KB the build sets
- * (cmake/gcc-arm-none-eabi.cmake), not two hand-maintained constants. */
-#define FLASH_STORE_PAGE_ADDR \
-    (FLASH_BASE + (GPS_FLASH_TOTAL_KB * 1024U) - FLASH_STORE_PAGE_SIZE)
+/* flash_store_erase_page() erases one hardware flash page per call
+ * (NbPages = 1U); that's only actually one flash_store page if the two
+ * sizes agree. FLASH_PAGE_SIZE (from the HAL, fixed by the STM32G431's
+ * silicon) and FLASH_STORE_PAGE_SIZE (this module's own record-page size,
+ * flash_store.h) are independent constants today only because both
+ * happen to be 2 KB - this catches the two ever silently drifting apart. */
+_Static_assert(FLASH_PAGE_SIZE == FLASH_STORE_PAGE_SIZE,
+               "flash_store assumes one hardware flash page == one "
+               "flash_store page");
+
+/* Two adjacent 2 KB pages of flash on the STM32G431CB (128 KB), reserved
+ * by carving GPS_FLASH_TOTAL_KB*2 KB off the top of the FLASH region in
+ * STM32G431XB_FLASH.ld - both derive from the single GPS_FLASH_TOTAL_KB
+ * the build sets (cmake/gcc-arm-none-eabi.cmake), not hand-maintained
+ * constants that could drift apart.
+ *
+ * A/B redundancy: exactly one page is "active" (appended to, and read at
+ * boot); the other is kept erased as the compaction target. Without this
+ * a brownout/reset between erasing the sole page and finishing its
+ * rewrite would leave every gate and the mag-cal blank/partial with
+ * nothing to fall back on - see flash_store_erase_and_compact(). */
+#define FLASH_STORE_NUM_PAGES 2U
+#define FLASH_STORE_REGION_BASE                       \
+    (FLASH_BASE + (GPS_FLASH_TOTAL_KB * 1024U) -      \
+     (FLASH_STORE_PAGE_SIZE * FLASH_STORE_NUM_PAGES))
+#define FLASH_STORE_PAGE_ADDR(n) \
+    (FLASH_STORE_REGION_BASE + ((uint32_t) (n) * FLASH_STORE_PAGE_SIZE))
+
+/* Which of the two pages is currently active, set by flash_store_init()
+ * and updated by flash_store_erase_and_compact() when it hands off to
+ * the freshly-written page. */
+static uint32_t s_active_page;
 
 static uint32_t
-flash_store_page_number(void)
+flash_store_page_number(uint32_t page_idx)
 {
-    return (FLASH_STORE_PAGE_ADDR - FLASH_BASE) / FLASH_PAGE_SIZE;
+    return (FLASH_STORE_PAGE_ADDR(page_idx) - FLASH_BASE) / FLASH_PAGE_SIZE;
 }
 
-/* RAM-resident: writing/erasing the internal flash bank while executing
- * from that same bank stalls the fetch unit on this part, so the actual
- * program/erase calls run from CCM instead. */
+/* True if a page holds at least one CRC-valid record, i.e. it has been
+ * written to since it was last erased. Used at boot to tell an in-use
+ * page apart from a blank/spare one. */
+static bool
+flash_store_page_in_use(const uint8_t *page)
+{
+    uint32_t offset = 0U;
+    while (offset + FLASH_STORE_RECORD_SIZE <= FLASH_STORE_PAGE_SIZE) {
+        if (flash_store_record_is_valid(
+                (const flash_store_record_t *) &page[offset])) {
+            return true;
+        }
+        offset += FLASH_STORE_RECORD_SIZE;
+    }
+    return false;
+}
+
+/* RAM-resident (.ccmfunc, see the linker script): but this alone does
+ * NOT make flash writes/erases stall-free. HAL_FLASH_Program() and
+ * HAL_FLASHEx_Erase() - called from here - are themselves linked into
+ * FLASH, not CCM, so the CPU fetch unit still stalls on every instruction
+ * fetch from either for the full duration of the operation (confirmed via
+ * `nm`: their symbols sit at 0x0800xxxx). That stalls the scheduler and
+ * every flash-resident ISR for the operation's duration - low tens of us
+ * for a program, tens of ms for a page erase. Placing these three thin
+ * wrappers in CCM doesn't change that; it was never going to without also
+ * moving the whole HAL flash driver there, which isn't done. Accepted
+ * as-is: a single flash_store_program_record() (one double-word loop,
+ * sub-ms) stalls briefly regardless of vehicle speed - e.g. every live
+ * gate-set during a lap - which is short enough to tolerate; the much
+ * longer flash_store_erase_page() (tens of ms) is the one that actually
+ * needs gating, and sys_task.c only calls flash_store_erase_and_compact()
+ * (which erases) while the car's fused speed reads as stationary. */
 __attribute__((section(".ccmfunc"))) static status_t
-flash_store_program_record(uint32_t offset,
+flash_store_program_record(uint32_t page_idx, uint32_t offset,
                             const flash_store_record_t *rec)
 {
     if (offset + FLASH_STORE_RECORD_SIZE > FLASH_STORE_PAGE_SIZE) {
@@ -254,7 +310,7 @@ flash_store_program_record(uint32_t offset,
 
     status_t result = STATUS_OK;
     const uint64_t *words = (const uint64_t *) (const void *) rec;
-    uint32_t addr = FLASH_STORE_PAGE_ADDR + offset;
+    uint32_t addr = FLASH_STORE_PAGE_ADDR(page_idx) + offset;
 
     for (uint32_t i = 0U; i < FLASH_STORE_RECORD_SIZE / 8U; i++) {
         if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
@@ -268,23 +324,59 @@ flash_store_program_record(uint32_t offset,
     return result;
 }
 
+__attribute__((section(".ccmfunc"))) static status_t
+flash_store_erase_page(uint32_t page_idx)
+{
+    HAL_FLASH_Unlock();
+    FLASH_EraseInitTypeDef erase = {0};
+    erase.TypeErase = FLASH_TYPEERASE_PAGES;
+    erase.Banks = FLASH_BANK_1;
+    erase.Page = flash_store_page_number(page_idx);
+    erase.NbPages = 1U;
+    uint32_t page_error = 0U;
+    HAL_StatusTypeDef erase_status = HAL_FLASHEx_Erase(&erase, &page_error);
+    HAL_FLASH_Lock();
+    return (erase_status == HAL_OK) ? STATUS_OK : STATUS_ERROR;
+}
+
 static status_t
 flash_store_append(const flash_store_record_t *rec)
 {
-    uint32_t offset =
-        flash_store_find_next_slot((const uint8_t *) FLASH_STORE_PAGE_ADDR,
-                                    FLASH_STORE_PAGE_SIZE);
+    uint32_t offset = flash_store_find_next_slot(
+        (const uint8_t *) FLASH_STORE_PAGE_ADDR(s_active_page),
+        FLASH_STORE_PAGE_SIZE);
     if (offset >= FLASH_STORE_PAGE_SIZE) {
         return STATUS_FULL;
     }
-    return flash_store_program_record(offset, rec);
+    return flash_store_program_record(s_active_page, offset, rec);
 }
 
 void
 flash_store_init(flash_store_gate_t *gates_out, uint32_t gates_max,
                  mag_cal_result_t *mag_cal_out)
 {
-    flash_store_restore((const uint8_t *) FLASH_STORE_PAGE_ADDR,
+    bool in_use[FLASH_STORE_NUM_PAGES];
+    for (uint32_t i = 0U; i < FLASH_STORE_NUM_PAGES; i++) {
+        in_use[i] =
+            flash_store_page_in_use((const uint8_t *) FLASH_STORE_PAGE_ADDR(i));
+    }
+
+    if (in_use[0] && in_use[1]) {
+        /* A reset landed between "compacted copy fully written to the
+         * spare" and "old copy erased" in flash_store_erase_and_compact().
+         * Compaction is a lossless replay, so both pages agree on the
+         * latest-per-key state - arbitrarily prefer page 0 and finish the
+         * interrupted cleanup so the next boot/compaction sees the normal
+         * single-active-page state again. */
+        s_active_page = 0U;
+        (void) flash_store_erase_page(1U);
+    } else if (in_use[1]) {
+        s_active_page = 1U;
+    } else {
+        s_active_page = 0U; /* page 0 in use, or neither (first-ever boot) */
+    }
+
+    flash_store_restore((const uint8_t *) FLASH_STORE_PAGE_ADDR(s_active_page),
                          FLASH_STORE_PAGE_SIZE, gates_out, gates_max,
                          mag_cal_out);
 }
@@ -325,13 +417,23 @@ flash_store_save_mag_cal(const mag_cal_result_t *cal)
     return flash_store_append(&rec);
 }
 
+/* Reclaims space from superseded history by rewriting only the current
+ * (latest-per-key) records - but into the SPARE page, not over the active
+ * one. The active page is only erased (and only then does the spare
+ * become active) once the rewrite has fully landed, so a brownout/reset
+ * at any point up to and including a failed program leaves the active
+ * page - and every gate/mag-cal it holds - completely untouched. Without
+ * this, erasing the sole page before rewriting it (as this function used
+ * to) meant a crash between the erase and the rewrite finishing lost
+ * every gate and the mag-cal outright, with no fallback. */
 __attribute__((section(".ccmfunc"))) status_t
 flash_store_erase_and_compact(void)
 {
-    /* Replay to the latest state before erasing (the source page is about
-     * to be wiped), then rewrite only the gates that are still valid -
-     * cleared/superseded slots and clear-all markers just vanish, since an
-     * absent record already reads back as "not set". */
+    /* Replay to the latest state first (the source page itself is never
+     * modified by this function until the very last step), then rewrite
+     * only the gates that are still valid - cleared/superseded slots and
+     * clear-all markers just vanish, since an absent record already
+     * reads back as "not set". */
     flash_store_gate_t gates[FLASH_STORE_MAX_GATES];
     uint32_t n_gates = 0U;
     flash_store_record_t mag_cal_rec;
@@ -341,7 +443,7 @@ flash_store_erase_and_compact(void)
         gates[i].valid = false;
     }
 
-    const uint8_t *page = (const uint8_t *) FLASH_STORE_PAGE_ADDR;
+    const uint8_t *page = (const uint8_t *) FLASH_STORE_PAGE_ADDR(s_active_page);
     uint32_t offset = 0U;
     while (offset + FLASH_STORE_RECORD_SIZE <= FLASH_STORE_PAGE_SIZE) {
         const flash_store_record_t *rec =
@@ -383,18 +485,13 @@ flash_store_erase_and_compact(void)
         return STATUS_ERROR; /* shouldn't happen: fewer keys than slots */
     }
 
-    HAL_FLASH_Unlock();
-    FLASH_EraseInitTypeDef erase = {0};
-    erase.TypeErase = FLASH_TYPEERASE_PAGES;
-    erase.Banks = FLASH_BANK_1;
-    erase.Page = flash_store_page_number();
-    erase.NbPages = 1U;
-    uint32_t page_error = 0U;
-    HAL_StatusTypeDef erase_status =
-        HAL_FLASHEx_Erase(&erase, &page_error);
-    HAL_FLASH_Lock();
-
-    if (erase_status != HAL_OK) {
+    /* Erase the spare unconditionally, even if it looks blank: a prior
+     * crash could have left a partial rewrite there from an attempt that
+     * never reached the final "erase the old active page" step below, and
+     * this guarantees a clean target regardless. The active page (this
+     * function's only source of truth so far) is not touched by this. */
+    uint32_t spare_page = 1U - s_active_page;
+    if (flash_store_erase_page(spare_page) != STATUS_OK) {
         return STATUS_ERROR;
     }
 
@@ -405,21 +502,32 @@ flash_store_erase_and_compact(void)
             flash_store_build_gate_record((uint8_t) i, gates[i].lat_1e7,
                                            gates[i].lon_1e7,
                                            gates[i].heading_rad, true, &rec);
-            if (flash_store_program_record(write_offset, &rec) !=
+            if (flash_store_program_record(spare_page, write_offset, &rec) !=
                 STATUS_OK) {
+                /* The spare is left half-written, but the active page (the
+                 * one actually in service) was never touched - restart
+                 * from a still-fully-valid state next boot/compaction. */
                 return STATUS_ERROR;
             }
             write_offset += FLASH_STORE_RECORD_SIZE;
         }
     }
     if (have_mag_cal) {
-        if (flash_store_program_record(write_offset, &mag_cal_rec) !=
-            STATUS_OK) {
+        if (flash_store_program_record(spare_page, write_offset,
+                                        &mag_cal_rec) != STATUS_OK) {
             return STATUS_ERROR;
         }
     }
 
-    return STATUS_OK;
+    /* Commit: only now that the spare fully holds the compacted state is
+     * the old active page erased and the spare promoted. A reset between
+     * these two lines leaves both pages holding valid (and, since
+     * compaction is a lossless replay, equivalent) data - flash_store_
+     * init() resolves that tie and finishes this cleanup on the next
+     * boot. */
+    status_t erase_status = flash_store_erase_page(s_active_page);
+    s_active_page = spare_page;
+    return erase_status;
 }
 
 #endif /* HOST_TEST_BUILD */

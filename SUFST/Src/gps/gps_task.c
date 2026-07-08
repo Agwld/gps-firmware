@@ -24,6 +24,11 @@
 static uint8_t s_rx_ring[GPS_RX_RING_SIZE];
 static TaskHandle_t s_gps_task_handle;
 
+/* Set by HAL_UART_ErrorCallback, cleared by gps_task_main once it has
+ * re-armed the DMA reception - see the callback below for why this is
+ * needed at all. */
+static volatile bool s_uart_error;
+
 /* Round a NAV-PVT iTOW to the nearest GPS second boundary, so it can be
  * paired with a PPS edge tick (PPS fires exactly on the second). */
 static uint32_t
@@ -140,6 +145,26 @@ HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     portYIELD_FROM_ISR(hp_woken);
 }
 
+/* Any UART error (framing/noise/overrun/DMA) is treated as blocking by
+ * the HAL: it tears the reception down (UART_EndRxTransfer + DMA abort)
+ * and, with no handler here, the (weak, empty) default would just drop
+ * it - permanently ending the UBX stream until reset, since nothing ever
+ * re-arms HAL_UARTEx_ReceiveToIdle_DMA(). A single EMI-induced framing
+ * error on the car would be enough to trigger this. The re-arm itself
+ * happens in gps_task_main (task context, not here) because it also has
+ * to reset read_idx back in step with the ring buffer DMA restarts at. */
+void
+HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance != USART3) {
+        return;
+    }
+    s_uart_error = true;
+    BaseType_t hp_woken = pdFALSE;
+    xTaskNotifyFromISR(s_gps_task_handle, 0U, eNoAction, &hp_woken);
+    portYIELD_FROM_ISR(hp_woken);
+}
+
 void
 gps_task_main(void *argument)
 {
@@ -168,6 +193,22 @@ gps_task_main(void *argument)
         if (xTaskNotifyWait(0U, 0xFFFFFFFFU, &event_pos,
                              pdMS_TO_TICKS(100U)) != pdTRUE) {
             continue; /* periodic wake with nothing new; loop and re-wait */
+        }
+
+        if (s_uart_error) {
+            /* The HAL already tore the transfer down before invoking the
+             * error callback, so RxState is READY here - safe to just
+             * re-arm. read_idx resets with it: the DMA write position
+             * restarts at 0, and any bytes the ring held past whatever
+             * read_idx pointed to are gone regardless. The UBX parser
+             * itself needs no reset - it already tolerates and resyncs
+             * past corrupt/missing bytes (see gps_config.c). */
+            s_uart_error = false;
+            HAL_UARTEx_ReceiveToIdle_DMA(&huart3, s_rx_ring,
+                                          GPS_RX_RING_SIZE);
+            __HAL_DMA_DISABLE_IT(&hdma_usart3_rx, DMA_IT_HT);
+            read_idx = 0U;
+            continue;
         }
 
         /* HAL reports the absolute byte position in the ring (0..SIZE).

@@ -6,6 +6,7 @@
 #include "fusion/kf6.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
 
 #define KF6_N     6U /* state dimension: pe,pn,pu,ve,vn,vu */
@@ -167,15 +168,42 @@ mat_inverse(const float a_in[KF6_M_MAX][KF6_M_MAX],
     }
 }
 
+/* Chi-squared 99.9th-percentile critical values, indexed [m-1] by
+ * measurement dimension. A correction whose normalized innovation
+ * squared (Mahalanobis distance y^T S^-1 y) exceeds this is statistically
+ * inconsistent with the filter's own uncertainty and is rejected outright
+ * rather than fused - e.g. a multipath GPS fix hundreds of metres off
+ * with only a moderately elevated hAcc, which a plain KF has no defence
+ * against otherwise (see kf6_correct_pos()/kf6_correct_vel()). */
+static const float k_chi2_999[KF6_M_MAX] = {10.828f, 13.816f, 16.266f};
+
+static bool
+innovation_is_reasonable(const float y[KF6_M_MAX],
+                          const float sinv[KF6_M_MAX][KF6_M_MAX], uint32_t m)
+{
+    float d2 = 0.0f;
+    for (uint32_t i = 0; i < m; i++) {
+        for (uint32_t j = 0; j < m; j++) {
+            d2 += y[i] * sinv[i][j] * y[j];
+        }
+    }
+    return d2 <= k_chi2_999[m - 1U];
+}
+
 /* Joseph-form linear KF measurement update on an arbitrary (x, p) pair -
  * used both for the live state and, during a rewind, for the historical
  * state being corrected. h/r are laid out as KF6_M_MAX-wide arrays with
  * only the first m rows/columns meaningful, so callers can pass fixed-size
- * locals without VLAs. */
+ * locals without VLAs. `gate` enables the chi-squared outlier rejection
+ * above - only for the absolute GPS position/velocity corrections, whose
+ * declared sigma comes from the receiver's own (occasionally optimistic)
+ * hAcc/sAcc; the wheelspeed-derived speed correction runs ungated since
+ * it converges continuously at a fixed, already-conservative sigma rather
+ * than arriving as a discrete, potentially-wrong fix. */
 static void
 kf_update(kf6_vec_t x, kf6_mat_t p, const float h[KF6_M_MAX][KF6_N],
           const float z[KF6_M_MAX], const float r[KF6_M_MAX][KF6_M_MAX],
-          uint32_t m)
+          uint32_t m, bool gate)
 {
     float y[KF6_M_MAX];
     for (uint32_t i = 0; i < m; i++) {
@@ -210,6 +238,10 @@ kf_update(kf6_vec_t x, kf6_mat_t p, const float h[KF6_M_MAX][KF6_N],
 
     float sinv[KF6_M_MAX][KF6_M_MAX];
     mat_inverse(s, sinv, m);
+
+    if (gate && !innovation_is_reasonable(y, sinv, m)) {
+        return; /* reject: leave (x, p) exactly as they were */
+    }
 
     float k[KF6_N][KF6_M_MAX];
     for (uint32_t i = 0; i < KF6_N; i++) {
@@ -309,10 +341,11 @@ kf6_predict(uint32_t tick, float ax, float ay, float az, quat_t q, float dt)
 static void
 correct_with_rewind(uint32_t fix_tick, const float h[KF6_M_MAX][KF6_N],
                      const float z[KF6_M_MAX],
-                     const float r[KF6_M_MAX][KF6_M_MAX], uint32_t m)
+                     const float r[KF6_M_MAX][KF6_M_MAX], uint32_t m,
+                     bool gate)
 {
     if (s_hist_count == 0U) {
-        kf_update(s_x, s_p, h, z, r, m);
+        kf_update(s_x, s_p, h, z, r, m, gate);
         return;
     }
 
@@ -340,7 +373,7 @@ correct_with_rewind(uint32_t fix_tick, const float h[KF6_M_MAX][KF6_N],
     memcpy(x_work, s_hist[target_idx].x, sizeof(x_work));
     memcpy(p_work, s_hist[target_idx].p, sizeof(p_work));
 
-    kf_update(x_work, p_work, h, z, r, m);
+    kf_update(x_work, p_work, h, z, r, m, gate);
 
     memcpy(s_hist[target_idx].x, x_work, sizeof(x_work));
     memcpy(s_hist[target_idx].p, p_work, sizeof(p_work));
@@ -373,7 +406,7 @@ kf6_correct_pos(uint32_t fix_tick, float e_m, float n_m, float u_m,
     r[1][1] = var;
     r[2][2] = var;
 
-    correct_with_rewind(fix_tick, h, z, r, 3U);
+    correct_with_rewind(fix_tick, h, z, r, 3U, true);
 }
 
 void
@@ -393,7 +426,7 @@ kf6_correct_vel(uint32_t fix_tick, float ve_mps, float vn_mps, float vu_mps,
     r[1][1] = var;
     r[2][2] = var;
 
-    correct_with_rewind(fix_tick, h, z, r, 3U);
+    correct_with_rewind(fix_tick, h, z, r, 3U, true);
 }
 
 void
@@ -409,7 +442,10 @@ kf6_correct_speed(uint32_t fix_tick, float speed_mps, float heading_rad,
     float r[KF6_M_MAX][KF6_M_MAX] = {{0}};
     r[0][0] = sigma_speed_mps * sigma_speed_mps;
 
-    correct_with_rewind(fix_tick, h, z, r, 1U);
+    /* Ungated (see kf_update()'s doc comment): this runs continuously off
+     * wheelspeed at a fixed, already-conservative sigma rather than as a
+     * discrete fix that can itself be wrong. */
+    correct_with_rewind(fix_tick, h, z, r, 1U, false);
 }
 
 void

@@ -20,11 +20,16 @@
  * matching the "external pull-ups present" case AN5192 describes for
  * that bit, not its example (which has no external pull-ups).
  *
- * lsm6dso32_mag_init() is a one-shot call (never re-run to reconfigure
- * a running sensor hub), so AN5192's disable-master-then-wait-300us
- * procedure - required only when changing an *already-running*
- * configuration - doesn't apply here; if a retry-after-fault path is
- * ever added that calls this a second time, add that procedure first.
+ * lsm6dso32_mag_init() one-shot-writes the IIS2MDC's CFG_REG_A/B/C (via
+ * the sensor-hub pass-through, AN5192 Section 7.4's worked LIS2MDL
+ * example) to bring it out of its power-on-default idle mode into
+ * continuous conversion, before configuring SLV0 for the continuous read
+ * - each write is followed by AN5192's mandated disable-master +
+ * >=300 us settle before the next FUNC_CFG_ACCESS/MASTER_CONFIG touch.
+ * It is otherwise a one-shot call (never re-run to reconfigure an
+ * already-continuously-reading sensor hub); if a retry-after-fault path
+ * is ever added that re-runs the final continuous-read setup alone,
+ * that specific step still needs the same disable/settle treatment.
  * Still worth a logic analyzer trace of the IIS2MDC actually responding
  * before trusting mag data on the bench, as with any first bring-up.
  */
@@ -49,7 +54,10 @@ typedef struct {
 
 typedef struct {
     float mx_ut, my_ut, mz_ut; /* board mount matrix NOT applied */
-    bool valid; /* sensor-hub mag word freshness (SENSORHUB updated) */
+    bool valid; /* IIS2MDC STATUS_REG Zyxda: true only on a genuinely new
+                 * conversion, false if this read raced the sensor's own
+                 * (slower, 100 Hz) ODR and just re-fetched the previous
+                 * latched word */
 } lsm6dso32_mag_sample_t;
 
 /**

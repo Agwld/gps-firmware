@@ -495,6 +495,15 @@ HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     if (GPIO_Pin != IMU_INT_PIN) {
         return;
     }
+    /* MX_GPIO_Init() enables this EXTI line before the scheduler (and
+     * hence imu_task_main(), which sets s_imu_task_handle as its first
+     * line) ever runs. The LSM6DSO32 asserts INT1 at 104 Hz as soon as
+     * it's powered, so an edge landing in that window - or after a warm
+     * reset, since the sensor keeps its prior config across one - would
+     * otherwise notify a NULL handle and HardFault. */
+    if (s_imu_task_handle == NULL) {
+        return;
+    }
     BaseType_t hp_woken = pdFALSE;
     vTaskNotifyGiveFromISR(s_imu_task_handle, &hp_woken);
     portYIELD_FROM_ISR(hp_woken);
