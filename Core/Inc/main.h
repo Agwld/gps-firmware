@@ -74,6 +74,8 @@ extern UART_HandleTypeDef huart3; /* RX: ZED-F9P UART1; TX: RS232 NMEA
 extern SPI_HandleTypeDef hspi1;   /* LSM6DSO32 */
 extern I2C_HandleTypeDef hi2c2;   /* F9P config (DDC), MCP9800, EEPROM */
 extern FDCAN_HandleTypeDef hfdcan1;
+extern IWDG_HandleTypeDef hiwdg; /* started in main() before the scheduler,
+                                  * refreshed by sys_task */
 extern DMA_HandleTypeDef hdma_usart3_rx;
 extern DMA_HandleTypeDef hdma_usart3_tx;
 extern DMA_HandleTypeDef hdma_spi1_rx;

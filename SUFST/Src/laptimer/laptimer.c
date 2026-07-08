@@ -86,6 +86,13 @@ void laptimer_update(float east_m, float north_m, float prev_east_m,
              * the start/finish can re-trigger a forward crossing well
              * inside one real lap; no legitimate lap is this short. */
             if (elapsed >= LAP_MIN_LAP_TIME_MS) {
+                /* Crossing the finish line also closes the final sector
+                 * (last sector gate -> finish). Time it here, before the
+                 * sector state resets, so that sector is reported with its
+                 * true duration rather than the previous sector's stale
+                 * value; without this the final sector is never timed. */
+                s_state.last_sector_ms = itow_elapsed_ms(
+                    s_state.sector_start_itow_ms, crossing_ms);
                 s_state.last_lap_ms = elapsed;
                 s_state.lap_count++;
                 s_state.lap_start_itow_ms = crossing_ms;

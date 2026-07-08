@@ -10,6 +10,8 @@
 
 #include "sys/app.h"
 
+IWDG_HandleTypeDef hiwdg;
+
 void SystemClock_Config(void);
 
 extern void MX_GPIO_Init(void);
@@ -34,6 +36,20 @@ int main(void)
     MX_I2C2_Init();
     MX_FDCAN1_Init();
     MX_TIM3_Init();
+
+    /* Start the independent watchdog here, before the scheduler, so the
+     * whole task-boot window is covered: once running, the IWDG resets
+     * the MCU on ANY subsequent hang (a spin, a failed configASSERT, an
+     * init that never returns) because nothing refreshes it during a
+     * hang. sys_task refreshes it in its loop. ~1.25 s at LSI/32; the
+     * boot config yields often enough (gps_config) for sys_task to run
+     * well within that. */
+    hiwdg.Instance = IWDG;
+    hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
+    hiwdg.Init.Reload = 1250U; /* ~1.25 s at 32 kHz LSI / 32 */
+    if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
+        Error_Handler();
+    }
 
     app_init(); /* creates all tasks and IPC objects (static) */
 

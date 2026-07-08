@@ -87,15 +87,31 @@ typedef struct {
 } vec3_t;
 
 static const float k_mount[3][3] = IMU_MOUNT_MATRIX;
+static const float k_mag_mount[3][3] = MAG_MOUNT_MATRIX;
 
+static vec3_t
+apply_matrix(const float m[3][3], float x, float y, float z)
+{
+    vec3_t v;
+    v.x = m[0][0] * x + m[0][1] * y + m[0][2] * z;
+    v.y = m[1][0] * x + m[1][1] * y + m[1][2] * z;
+    v.z = m[2][0] * x + m[2][1] * y + m[2][2] * z;
+    return v;
+}
+
+/* Accel/gyro use the LSM6DSO32 orientation; the magnetometer is a
+ * physically separate part with its own axis orientation, so it gets its
+ * own matrix rather than borrowing the accel/gyro one. */
 static vec3_t
 apply_mount(float x, float y, float z)
 {
-    vec3_t v;
-    v.x = k_mount[0][0] * x + k_mount[0][1] * y + k_mount[0][2] * z;
-    v.y = k_mount[1][0] * x + k_mount[1][1] * y + k_mount[1][2] * z;
-    v.z = k_mount[2][0] * x + k_mount[2][1] * y + k_mount[2][2] * z;
-    return v;
+    return apply_matrix(k_mount, x, y, z);
+}
+
+static vec3_t
+apply_mag_mount(float x, float y, float z)
+{
+    return apply_matrix(k_mag_mount, x, y, z);
 }
 
 /* Rotate v by quaternion q (body -> world, ahrs.h's convention);
@@ -257,7 +273,15 @@ handle_gps_fix(void)
     float e_m, n_m, u_m;
     geodesy_to_enu(lat_deg, lon_deg, height_m, &e_m, &n_m, &u_m);
 
-    uint32_t fix_tick = timebase_itow_ms_to_tick(pvt.itow_ms);
+    /* Before the first PPS edge disciplines the timebase, iTOW can't be
+     * mapped into the tick domain: timebase_itow_ms_to_tick() returns 0,
+     * which kf6's rewind would anchor to the oldest (~150 ms stale)
+     * history entry, injecting a position error at speed. Fall back to
+     * the current tick - treating the fix as ~now is a far smaller epoch
+     * error and keeps GPS aiding alive even if PPS never locks. */
+    uint32_t fix_tick = timebase_is_disciplined()
+                            ? timebase_itow_ms_to_tick(pvt.itow_ms)
+                            : timebase_get_tick();
     float sigma_pos_m = (float) pvt.hacc_mm * 0.001f;
     if (sigma_pos_m < 0.5f) {
         sigma_pos_m = 0.5f; /* floor: hAcc alone understates real error */
@@ -357,7 +381,7 @@ imu_task_main(void *argument)
         if ((mag_decim++ % IMU_MAG_DECIMATION) == 0U) {
             lsm6dso32_mag_sample_t m;
             if (lsm6dso32_read_mag(&m) == STATUS_OK && m.valid) {
-                vec3_t mv = apply_mount(m.mx_ut, m.my_ut, m.mz_ut);
+                vec3_t mv = apply_mag_mount(m.mx_ut, m.my_ut, m.mz_ut);
 
                 mag_cal_cont_feed(&s_mag_cont, mv.x, mv.y, mv.z);
                 mag_cal_apply(mag_cal_cont_result(&s_mag_cont), mv.x, mv.y,
@@ -388,7 +412,13 @@ imu_task_main(void *argument)
         float fused_height_m;
         geodesy_from_enu(e_m, n_m, u_m, &fused_lat_deg, &fused_lon_deg,
                           &fused_height_m);
-        canbc_state_set_position(fused_lat_deg, fused_lon_deg);
+        /* Only publish an absolute position once the ENU frame is
+         * anchored; before that geodesy has no origin and the fused
+         * lat/lon are a meaningless (0,0)-relative value (the divide-by-
+         * zero guard in geodesy_from_enu keeps it finite regardless). */
+        if (s_frame_origin_set) {
+            canbc_state_set_position(fused_lat_deg, fused_lon_deg);
+        }
 
         float fused_speed_mps = sqrtf(ve_mps * ve_mps + vn_mps * vn_mps);
         float fused_course_deg =

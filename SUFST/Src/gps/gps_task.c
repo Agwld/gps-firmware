@@ -37,8 +37,15 @@ handle_nav_pvt(const ubx_nav_pvt_t *pvt)
 {
     uint32_t pps_tick;
     if (timebase_take_pending_pps(&pps_tick)) {
-        timebase_on_pps(pps_tick, round_to_second(pvt->itow_ms));
-        app_set_events(SYS_EVT_TIME_LOCKED);
+        /* Only discipline the timebase once the receiver has actually
+         * resolved time-of-week: pairing the edge with an unresolved
+         * iTOW would lock the mapping to the wrong GPS second. The edge
+         * is consumed either way (take_pending_pps clears it) so a stale
+         * one doesn't linger - the next 1 Hz edge is paired once valid. */
+        if (pvt->valid & UBX_PVT_VALID_TIME) {
+            timebase_on_pps(pps_tick, round_to_second(pvt->itow_ms));
+            app_set_events(SYS_EVT_TIME_LOCKED);
+        }
     }
 
     bool fix_ok = (pvt->flags & 0x01U) != 0U;
@@ -85,14 +92,20 @@ handle_nav_pvt(const ubx_nav_pvt_t *pvt)
 static void
 handle_tim_tm2(const ubx_tim_tm2_t *tm2)
 {
-    static uint16_t s_last_count = 0xFFFFU;
+    /* A separate "seen one yet" flag rather than a sentinel count value:
+     * the rising-edge counter is a full 16-bit field, so any specific
+     * sentinel (0xFFFF) collides with a real edge count and would drop a
+     * genuine edge. */
+    static bool s_have_last = false;
+    static uint16_t s_last_count = 0U;
 
     if (!(tm2->flags & UBX_TM2_FLAG_NEW_RISING)) {
         return;
     }
-    if (tm2->count == s_last_count) {
+    if (s_have_last && tm2->count == s_last_count) {
         return; /* dedupe: already forwarded this edge */
     }
+    s_have_last = true;
     s_last_count = tm2->count;
 
     can_lap_event_t evt = {CAN_LAP_EVENT_TM2, 0U, tm2->tow_ms_rising, 0U};
@@ -157,7 +170,12 @@ gps_task_main(void *argument)
             continue; /* periodic wake with nothing new; loop and re-wait */
         }
 
-        uint16_t write_idx = (uint16_t) event_pos;
+        /* HAL reports the absolute byte position in the ring (0..SIZE).
+         * On a DMA transfer-complete (buffer wrap) it reports the full
+         * SIZE, which must fold back to 0 - otherwise write_idx can never
+         * equal the always-modulo read_idx and the drain loop spins
+         * forever, hanging the task until the watchdog resets the node. */
+        uint16_t write_idx = (uint16_t) (event_pos % GPS_RX_RING_SIZE);
         while (read_idx != write_idx) {
             if (ubx_parser_feed(&parser, s_rx_ring[read_idx])) {
                 process_frame(&parser.frame);

@@ -59,6 +59,18 @@ uint32_t timebase_tick_to_itow_ms(uint32_t tick);
 uint32_t timebase_itow_ms_to_tick(uint32_t itow_ms);
 
 /**
+ * @brief Has at least one PPS edge disciplined the mapping yet?
+ *
+ * Until this is true, timebase_itow_ms_to_tick() has no real reference
+ * and returns 0, so callers that place a GPS fix into the tick domain
+ * (kf6's delayed-state rewind) should hold off applying the correction
+ * rather than anchor it to a bogus epoch.
+ *
+ * @return true once timebase_on_pps() has been called at least once.
+ */
+bool timebase_is_disciplined(void);
+
+/**
  * @brief Fetch and clear the most recently captured PPS edge tick, if
  *        any edge has arrived since the last call.
  *

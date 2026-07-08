@@ -9,6 +9,7 @@
  * catch endianness/bit-position mistakes.
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -458,6 +459,37 @@ static void test_null_args(void)
           "unpack NULL out");
 }
 
+/* Regression: a non-finite producer value (NaN/Inf, e.g. an
+ * uninitialised fusion state or an AHRS divergence) is undefined when
+ * cast straight to an integer. round_f/round_d must map it to a finite,
+ * in-range field value instead of emitting garbage. Covers both the
+ * float path (attitude) and the double path (position). */
+static void test_nonfinite_is_clamped(void)
+{
+    uint8_t buf[8];
+
+    can_gps_attitude_t a_in = { .yaw_deg = NAN,
+                                .pitch_deg = INFINITY,
+                                .roll_deg = -INFINITY,
+                                .fusion_status = 0U,
+                                .counter = 0U };
+    can_gps_attitude_t a_out;
+    CHECK(can_pack_gps_attitude(&a_in, buf) == STATUS_OK, "pack failed");
+    CHECK(can_unpack_gps_attitude(buf, &a_out) == STATUS_OK, "unpack failed");
+    CHECK(isfinite(a_out.yaw_deg) && a_out.yaw_deg >= 0.0f &&
+              a_out.yaw_deg <= 655.36f,
+          "yaw not clamped finite: %f", a_out.yaw_deg);
+    CHECK(isfinite(a_out.pitch_deg), "pitch not finite: %f", a_out.pitch_deg);
+    CHECK(isfinite(a_out.roll_deg), "roll not finite: %f", a_out.roll_deg);
+
+    can_gps_position_t p_in = { .lat_deg = NAN, .lon_deg = INFINITY };
+    can_gps_position_t p_out;
+    CHECK(can_pack_gps_position(&p_in, buf) == STATUS_OK, "pack failed");
+    CHECK(can_unpack_gps_position(buf, &p_out) == STATUS_OK, "unpack failed");
+    CHECK(isfinite(p_out.lat_deg), "lat not finite: %f", p_out.lat_deg);
+    CHECK(isfinite(p_out.lon_deg), "lon not finite: %f", p_out.lon_deg);
+}
+
 int main(void)
 {
     test_gps_position_roundtrip();
@@ -478,6 +510,7 @@ int main(void)
     test_gps_gate_roundtrip();
     test_gps_time_roundtrip();
     test_null_args();
+    test_nonfinite_is_clamped();
 
     if (g_failures == 0) {
         printf("PASS: all test_can_pack cases\n");

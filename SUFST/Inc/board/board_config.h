@@ -47,6 +47,28 @@
     }
 
 /*
+ * Magnetometer mounting: mag sensor axes -> vehicle axes, same convention
+ * as IMU_MOUNT_MATRIX. The IIS2MDC magnetometer is a physically separate
+ * part from the LSM6DSO32 and is mounted with its pin 1 rotated 180 deg
+ * relative to the IMU, so its axes do NOT match the accel/gyro - feeding
+ * mag samples through the accel/gyro matrix would mis-rotate AHRS heading.
+ *
+ * From the IIS2MDC datasheet top-view axes (Z out of the top face) and
+ * that placement: +X points to the vehicle front and +Z up, both taken
+ * from the mounting; +Y is then forced to the vehicle's left by the
+ * part's right-handedness (left = up x forward = Z x X = +Y). Net result
+ * is the identity - a valid right-handed mount (det +1) that differs from
+ * the IMU's 180-deg-about-Z orientation, which is why the two parts need
+ * separate matrices.
+ */
+#define MAG_MOUNT_MATRIX                                                       \
+    {                                                                          \
+        {1.0f, 0.0f, 0.0f},                                                    \
+        {0.0f, 1.0f, 0.0f},                                                    \
+        {0.0f, 0.0f, 1.0f},                                                    \
+    }
+
+/*
  * Lap timing
  */
 #define LAP_MAX_GATES          8U    /* start/finish + up to 7 sectors */

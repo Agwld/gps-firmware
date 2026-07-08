@@ -120,9 +120,30 @@ test_from_enu_is_inverse(void)
     CHECK_NEAR("from_enu inverse: height", h2, h1, 1e-4f);
 }
 
+/* Regression: before geodesy_set_origin() runs, the per-degree scale
+ * factors are still zero. geodesy_from_enu() must not divide by them and
+ * emit NaN/Inf (which imu_task would then broadcast, and can_pack would
+ * cast to int - undefined). Must run first, while the origin is unset. */
+static void
+test_from_enu_before_origin_is_finite(void)
+{
+    double lat = 0.0, lon = 0.0;
+    float h = 0.0f;
+    geodesy_from_enu(100.0f, 50.0f, 5.0f, &lat, &lon, &h);
+
+    if (!isfinite(lat) || !isfinite(lon) || !isfinite(h)) {
+        fprintf(stderr,
+                "FAIL: from_enu before origin non-finite: lat=%f lon=%f "
+                "h=%f\n",
+                lat, lon, (double) h);
+        s_failures++;
+    }
+}
+
 int
 main(void)
 {
+    test_from_enu_before_origin_is_finite(); /* before any set_origin */
     test_origin_returns_zero();
     test_known_offset();
     test_pure_east_offset();

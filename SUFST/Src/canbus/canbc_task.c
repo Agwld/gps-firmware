@@ -47,6 +47,12 @@
  * LCM of every period_slots value below. */
 #define CANBC_SLOT_WRAP 100U
 
+/* Upper bound (in 1 ms ticks) on how long send_frame() waits for a free
+ * TX mailbox before giving up. The 3-deep FIFO drains several classic
+ * frames per tick, so this only ever trips on a genuinely stuck/bus-off
+ * peripheral - the bound just guarantees the task can't hang there. */
+#define CANBC_TX_WAIT_MAX_TICKS 3U
+
 typedef struct {
     uint32_t id;
     uint8_t dlc;
@@ -95,6 +101,14 @@ static const canbc_rota_entry_t s_rota[ROTA_COUNT] = {
     [ROTA_GPS_TIME] = {CAN_ID_GPS_TIME, CAN_DLC_GPS_TIME, 100, 71},
 };
 
+/* Per-message rolling send counters (can_defs.h: the counter byte lets a
+ * receiver detect dropped frames). Incremented once per due send - even
+ * on a drop - so a gap in the sequence flags exactly that drop. Only the
+ * messages that carry a counter field are indexed here; wrap at 256 is
+ * intentional. */
+static uint8_t s_tx_counter[ROTA_COUNT];
+static uint8_t s_lap_event_counter;
+
 static status_t
 send_frame(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
@@ -104,13 +118,19 @@ send_frame(uint32_t id, const uint8_t *data, uint8_t dlc)
         FDCAN_DLC_BYTES_6, FDCAN_DLC_BYTES_7, FDCAN_DLC_BYTES_8,
     };
 
-    /* The hardware TX FIFO is only 3 deep; rather than block the task
-     * (and everything behind it in the rota) waiting for room, drop this
-     * one frame - the next slot's value supersedes it within one period
-     * anyway, and GPS_Status carries a bus-health view for diagnosing
-     * persistent drops. */
-    if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0U) {
-        return STATUS_FULL;
+    /* The hardware TX FIFO is only 3 deep, and a busy slot's rota queues
+     * more frames than that back-to-back - faster than the bus drains
+     * them. Wait briefly for a free mailbox (a classic frame clears in
+     * well under 1 ms) rather than dropping: dropping-on-full always
+     * sacrificed the frames that sort last in the rota (temp, status,
+     * time, mag), so they never reached the bus at all. Bounded so a
+     * stuck/bus-off peripheral that never drains can't stall the task. */
+    for (uint32_t waited = 0U;
+         HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) == 0U; waited++) {
+        if (waited >= CANBC_TX_WAIT_MAX_TICKS) {
+            return STATUS_FULL;
+        }
+        vTaskDelay(1U);
     }
 
     FDCAN_TxHeaderTypeDef header = {0};
@@ -146,13 +166,15 @@ send_rota_entry(uint32_t which, const canbc_state_t *s)
     }
     case ROTA_GPS_VELOCITY: {
         can_gps_velocity_t m = {s->speed_mps, s->course_deg, s->alt_m,
-                                 s->fix_type, s->num_sv, 0};
+                                 s->fix_type, s->num_sv,
+                                 s_tx_counter[ROTA_GPS_VELOCITY]++};
         can_pack_gps_velocity(&m, buf);
         break;
     }
     case ROTA_GPS_ATTITUDE: {
         can_gps_attitude_t m = {s->yaw_deg, s->pitch_deg, s->roll_deg,
-                                 s->fusion_status, 0};
+                                 s->fusion_status,
+                                 s_tx_counter[ROTA_GPS_ATTITUDE]++};
         can_pack_gps_attitude(&m, buf);
         break;
     }
@@ -169,12 +191,14 @@ send_rota_entry(uint32_t which, const canbc_state_t *s)
         break;
     }
     case ROTA_GPS_IMU_ACCEL: {
-        can_gps_imu_accel_t m = {s->ax_mg, s->ay_mg, s->az_mg, 0};
+        can_gps_imu_accel_t m = {s->ax_mg, s->ay_mg, s->az_mg,
+                                  s_tx_counter[ROTA_GPS_IMU_ACCEL]++};
         can_pack_gps_imu_accel(&m, buf);
         break;
     }
     case ROTA_GPS_IMU_GYRO: {
-        can_gps_imu_gyro_t m = {s->gx_dps, s->gy_dps, s->gz_dps, 0};
+        can_gps_imu_gyro_t m = {s->gx_dps, s->gy_dps, s->gz_dps,
+                                 s_tx_counter[ROTA_GPS_IMU_GYRO]++};
         can_pack_gps_imu_gyro(&m, buf);
         break;
     }
@@ -319,6 +343,9 @@ canbc_task_main(void *argument)
         can_lap_event_t evt;
         while (xQueueReceive(g_lap_event_queue, &evt, 0) == pdTRUE) {
             uint8_t buf[8];
+            /* Producers leave counter at 0; stamp the rolling value here,
+             * where all lap events funnel through the single sender. */
+            evt.counter = s_lap_event_counter++;
             can_pack_lap_event(&evt, buf);
             send_frame(CAN_ID_LAP_EVENT, buf, CAN_DLC_LAP_EVENT);
         }

@@ -16,6 +16,8 @@
 #include "semphr.h"
 #include "task.h"
 
+#include "main.h" /* NVIC_SystemReset (CMSIS) */
+
 #include "canbus/canbc.h"
 #include "canbus/canbc_task.h"
 #include "gps/gps_task.h"
@@ -207,9 +209,12 @@ vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     (void) xTask;
     (void) pcTaskName;
+    /* A stack overflow has already corrupted memory - recover fast rather
+     * than hang. Reset immediately instead of spinning until the watchdog
+     * eventually fires, and this also covers any fault in the boot window
+     * before the IWDG is running. */
     taskDISABLE_INTERRUPTS();
-    for (;;) {
-    }
+    NVIC_SystemReset();
 }
 
 void

@@ -69,6 +69,16 @@ void
 geodesy_from_enu(float east_m, float north_m, float up_m, double *lat_deg,
                   double *lon_deg, float *height_m)
 {
+    /* The scale factors are zero until geodesy_set_origin() runs on the
+     * first fix. Dividing by them before then yields NaN/Inf; report the
+     * (as-yet-unset) origin instead so callers never publish garbage. */
+    if (s_m_per_deg_lat == 0.0f || s_m_per_deg_lon == 0.0f) {
+        *lat_deg = s_origin_lat_deg;
+        *lon_deg = s_origin_lon_deg;
+        *height_m = s_origin_height_m + up_m;
+        return;
+    }
+
     *lat_deg = s_origin_lat_deg + (double) north_m / (double) s_m_per_deg_lat;
     *lon_deg = s_origin_lon_deg + (double) east_m / (double) s_m_per_deg_lon;
     *height_m = s_origin_height_m + up_m;

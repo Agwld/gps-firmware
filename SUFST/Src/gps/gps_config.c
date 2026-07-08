@@ -66,6 +66,11 @@ build_valset(uint8_t *buf, uint16_t buf_size, const kv_t *kv, uint16_t count)
     payload[idx++] = 0x00U; /* reserved */
 
     for (uint16_t i = 0U; i < count; i++) {
+        /* 4 key bytes + up to `width` value bytes; bail rather than
+         * overrun the fixed payload buffer if the table ever outgrows it. */
+        if ((size_t) idx + 4U + kv[i].width > sizeof(payload)) {
+            return 0U;
+        }
         payload[idx++] = (uint8_t) (kv[i].key & 0xFFU);
         payload[idx++] = (uint8_t) ((kv[i].key >> 8) & 0xFFU);
         payload[idx++] = (uint8_t) ((kv[i].key >> 16) & 0xFFU);
@@ -119,10 +124,6 @@ send_and_wait(const uint8_t *frame, uint16_t frame_len, ubx_parser_t *p,
         if (gps_i2c_read(chunk, sizeof(chunk), &n) != STATUS_OK) {
             return false;
         }
-        if (n == 0U) {
-            vTaskDelay(pdMS_TO_TICKS(5));
-            continue;
-        }
         for (uint16_t i = 0U; i < n; i++) {
             if (ubx_parser_feed(p, chunk[i])) {
                 if (p->frame.cls == want_cls && p->frame.id == want_id) {
@@ -130,6 +131,11 @@ send_and_wait(const uint8_t *frame, uint16_t frame_len, ubx_parser_t *p,
                 }
             }
         }
+        /* Yield every iteration, not only on an empty read: the DDC port
+         * streams NMEA continuously at boot, so a data-present fast path
+         * would busy-loop on blocking I2C reads at task priority and
+         * starve lower-priority tasks (sys_task feeds the watchdog). */
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
     return false;
 }
@@ -168,7 +174,10 @@ apply_valset(const kv_t *kv, uint16_t count)
     }
 
     ubx_ack_t ack;
-    return ubx_decode_ack(&p.frame, &ack) && ack.ack;
+    /* Confirm the ACK actually acknowledges *our* CFG-VALSET, not some
+     * unrelated ACK-ACK that happened to be on the DDC stream. */
+    return ubx_decode_ack(&p.frame, &ack) && ack.ack &&
+           ack.acked_cls == UBX_CLASS_CFG && ack.acked_id == UBX_CFG_VALSET;
 }
 
 static bool
@@ -185,8 +194,10 @@ verify_u4(uint32_t key, uint32_t expected)
     }
 
     /* VALGET response payload: 4-byte header (version, layer, reserved
-     * x2) then repeated key(4)+value entries, same layout as VALSET. */
-    if (p.frame.len < 8U) {
+     * x2) then repeated key(4)+value entries, same layout as VALSET. A U4
+     * value therefore needs 4 (header) + 4 (key) + 4 (value) = 12 bytes;
+     * anything shorter can't hold the value read at payload[8..11]. */
+    if (p.frame.len < 12U) {
         return false;
     }
     uint32_t got_key = ubx_rd_u4(&p.frame.payload[4]);

@@ -150,11 +150,8 @@ sys_task_main(void *argument)
 {
     (void) argument;
 
-    IWDG_HandleTypeDef hiwdg = {0};
-    hiwdg.Instance = IWDG;
-    hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
-    hiwdg.Init.Reload = 1250U; /* ~1 s at 32 kHz LSI / 32 */
-    HAL_IWDG_Init(&hiwdg);
+    /* The IWDG is started in main() before the scheduler (so a boot-time
+     * hang is still caught); this task just keeps refreshing it. */
 
     uint32_t uptime_ticks = 0U;
     uint32_t temp_decim = 0U;

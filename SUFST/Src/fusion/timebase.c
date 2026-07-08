@@ -47,6 +47,12 @@ timebase_on_pps(uint32_t tick_at_pps, uint32_t itow_ms_of_pps)
     s_last.valid = true;
 }
 
+bool
+timebase_is_disciplined(void)
+{
+    return s_last.valid;
+}
+
 /* Rollover-safe iTOW difference (newer - older), wrapped into
  * [-week/2, +week/2] so a difference spanning the week boundary comes
  * out as the small delta it physically is instead of a ~604800000 ms

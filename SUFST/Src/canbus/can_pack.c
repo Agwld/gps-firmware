@@ -10,6 +10,7 @@
 
 #include "canbus/can_defs.h"
 
+#include <math.h>
 #include <stddef.h>
 
 /* ------------------------------------------------------------------ */
@@ -75,14 +76,24 @@ static int32_t rd_i32(const uint8_t *p)
 /* Rounding + saturation helpers                                      */
 /* ------------------------------------------------------------------ */
 
-/* Round-half-away-from-zero; avoids a libm lroundf() dependency. */
+/* Round-half-away-from-zero; avoids a libm lroundf() dependency.
+ * A non-finite input (NaN/Inf, e.g. from an uninitialised fusion state)
+ * is undefined when cast to int64_t, so map it to a value the sat_*
+ * clampers turn into a sane field limit: NaN -> 0, +Inf -> max, -Inf ->
+ * min. isfinite/isnan are compiler builtins here, not libm calls. */
 static int64_t round_f(float x)
 {
+    if (!isfinite(x)) {
+        return isnan(x) ? 0 : (x > 0.0f ? INT64_MAX : INT64_MIN);
+    }
     return (int64_t)(x >= 0.0f ? x + 0.5f : x - 0.5f);
 }
 
 static int64_t round_d(double x)
 {
+    if (!isfinite(x)) {
+        return isnan(x) ? 0 : (x > 0.0 ? INT64_MAX : INT64_MIN);
+    }
     return (int64_t)(x >= 0.0 ? x + 0.5 : x - 0.5);
 }
 

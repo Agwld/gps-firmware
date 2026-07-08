@@ -254,10 +254,71 @@ static void test_itow_rollover_does_not_spike_elapsed(void)
     assert(elapsed < 5100U);
 }
 
+static void test_final_sector_timed_on_lap(void)
+{
+    /* Sector gate a quarter-lap in (theta = pi/2), so the final sector
+     * (sector gate -> finish line, 3/4 of the lap) is clearly longer than
+     * sector 0 (start -> sector gate, 1/4 lap). The final sector is closed
+     * by the finish-line crossing; regression: at lap completion its time
+     * must be the ~3/4-lap value, not sector 0's stale ~1/4-lap value. */
+    laptimer_init();
+    gates_init();
+
+    assert(gates_set(0U, CIRCLE_RADIUS_M, 0.0f, PI_F / 2.0f) == STATUS_OK);
+    /* theta = pi/2: position (0, R), tangent heading atan2(cos,-sin) = pi. */
+    assert(gates_set(1U, 0.0f, CIRCLE_RADIUS_M, PI_F) == STATUS_OK);
+
+    float omega = SPEED_MPS / CIRCLE_RADIUS_M;
+    float lap_ms_truth = ground_truth_lap_ms();
+    float total_time_s = (lap_ms_truth / 1000.0f) * 1.1f; /* just past one lap */
+    uint32_t nsamples = (uint32_t) (total_time_s / SAMPLE_DT_S) + 1U;
+    uint32_t itow0_ms = 100000U;
+
+    float prev_east = CIRCLE_RADIUS_M;
+    float prev_north = 0.0f;
+    uint32_t prev_itow_ms = itow0_ms;
+    uint16_t prev_lap_count = 0U;
+    uint32_t final_sector_ms = 0U;
+    bool saw_lap = false;
+
+    for (uint32_t i = 1U; i <= nsamples; i++) {
+        float t = (float) i * SAMPLE_DT_S;
+        float theta = omega * t;
+        float sin_t, cos_t;
+        test_sincosf(theta, &sin_t, &cos_t);
+        float east = CIRCLE_RADIUS_M * cos_t;
+        float north = CIRCLE_RADIUS_M * sin_t;
+        uint32_t itow_ms = itow0_ms + (uint32_t) (t * 1000.0f + 0.5f);
+
+        laptimer_update(east, north, prev_east, prev_north, itow_ms,
+                         prev_itow_ms);
+
+        uint16_t lap_count = laptimer_get_lap_count();
+        if (lap_count != prev_lap_count) {
+            /* Sector time as it stands the instant the lap completes. */
+            final_sector_ms = laptimer_get_last_sector_ms();
+            saw_lap = true;
+            prev_lap_count = lap_count;
+        }
+
+        prev_east = east;
+        prev_north = north;
+        prev_itow_ms = itow_ms;
+    }
+
+    assert(saw_lap);
+    float three_quarter_ms = lap_ms_truth * 0.75f;
+    float err = test_absf((float) final_sector_ms - three_quarter_ms);
+    printf("final sector: %u ms (truth %.1f ms, err %.2f ms)\n",
+           final_sector_ms, (double) three_quarter_ms, (double) err);
+    assert(err < 30.0f);
+}
+
 int main(void)
 {
     test_circle_replay_lap_times();
     test_sector_gate_within_lap();
+    test_final_sector_timed_on_lap();
     test_itow_rollover_does_not_spike_elapsed();
 
     printf("test_laptimer: all tests passed\n");
