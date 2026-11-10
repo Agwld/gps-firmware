@@ -10,6 +10,9 @@
  * setting a new start/finish) write a KIND_GATE_CLEAR_ALL record.
  * Superseded history is reclaimed by flash_store_erase_and_compact(),
  * which rewrites only the latest still-valid gate per slot.
+ *
+ * The target-only half of this file is single-task (imu_task) by
+ * contract - see flash_store.h.
  */
 
 #include "persist/flash_store.h"
@@ -79,6 +82,16 @@ flash_store_build_gate_clear_all_record(flash_store_record_t *out)
 {
     memset(out, 0, sizeof(*out));
     out->kind = FLASH_STORE_KIND_GATE_CLEAR_ALL;
+    out->crc = record_crc(out);
+}
+
+void
+flash_store_build_compact_done_record(uint32_t generation,
+                                       flash_store_record_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->kind = FLASH_STORE_KIND_COMPACT_DONE;
+    memcpy(out->payload, &generation, sizeof generation);
     out->crc = record_crc(out);
 }
 
@@ -162,6 +175,71 @@ flash_store_find_next_slot(const uint8_t *page, uint32_t page_size)
         offset += FLASH_STORE_RECORD_SIZE;
     }
     return page_size;
+}
+
+uint32_t
+flash_store_free_records(const uint8_t *page, uint32_t page_size)
+{
+    return (page_size - flash_store_find_next_slot(page, page_size)) /
+           FLASH_STORE_RECORD_SIZE;
+}
+
+bool
+flash_store_page_in_use(const uint8_t *page, uint32_t page_size)
+{
+    uint32_t offset = 0U;
+    while (offset + FLASH_STORE_RECORD_SIZE <= page_size) {
+        if (flash_store_record_is_valid(
+                (const flash_store_record_t *) &page[offset])) {
+            return true;
+        }
+        offset += FLASH_STORE_RECORD_SIZE;
+    }
+    return false;
+}
+
+bool
+flash_store_page_generation(const uint8_t *page, uint32_t page_size,
+                             uint32_t *generation)
+{
+    *generation = 0U;
+
+    uint32_t offset = 0U;
+    while (offset + FLASH_STORE_RECORD_SIZE <= page_size) {
+        const flash_store_record_t *rec =
+            (const flash_store_record_t *) &page[offset];
+        if (flash_store_record_is_valid(rec) &&
+            rec->kind == FLASH_STORE_KIND_COMPACT_DONE) {
+            memcpy(generation, rec->payload, sizeof *generation);
+            return true;
+        }
+        offset += FLASH_STORE_RECORD_SIZE;
+    }
+    return false;
+}
+
+uint32_t
+flash_store_select_active_page(const uint8_t *page0, const uint8_t *page1,
+                                uint32_t page_size)
+{
+    if (!flash_store_page_in_use(page1, page_size)) {
+        return 0U; /* page 0 in use, or neither (first-ever boot) */
+    }
+    if (!flash_store_page_in_use(page0, page_size)) {
+        return 1U;
+    }
+
+    /* Both in use: a reset interrupted a compaction. See the header for
+     * why the completion marker / generation decides it. */
+    uint32_t gen0, gen1;
+    bool done0 = flash_store_page_generation(page0, page_size, &gen0);
+    bool done1 = flash_store_page_generation(page1, page_size, &gen1);
+
+    if (done0 && done1) {
+        /* Signed difference so the comparison survives generation wrap. */
+        return ((int32_t) (gen1 - gen0) > 0) ? 1U : 0U;
+    }
+    return done1 ? 1U : 0U;
 }
 
 void
@@ -265,23 +343,6 @@ flash_store_page_number(uint32_t page_idx)
     return (FLASH_STORE_PAGE_ADDR(page_idx) - FLASH_BASE) / FLASH_PAGE_SIZE;
 }
 
-/* True if a page holds at least one CRC-valid record, i.e. it has been
- * written to since it was last erased. Used at boot to tell an in-use
- * page apart from a blank/spare one. */
-static bool
-flash_store_page_in_use(const uint8_t *page)
-{
-    uint32_t offset = 0U;
-    while (offset + FLASH_STORE_RECORD_SIZE <= FLASH_STORE_PAGE_SIZE) {
-        if (flash_store_record_is_valid(
-                (const flash_store_record_t *) &page[offset])) {
-            return true;
-        }
-        offset += FLASH_STORE_RECORD_SIZE;
-    }
-    return false;
-}
-
 /* RAM-resident (.ccmfunc, see the linker script): but this alone does
  * NOT make flash writes/erases stall-free. HAL_FLASH_Program() and
  * HAL_FLASHEx_Erase() - called from here - are themselves linked into
@@ -355,25 +416,30 @@ void
 flash_store_init(flash_store_gate_t *gates_out, uint32_t gates_max,
                  mag_cal_result_t *mag_cal_out)
 {
-    bool in_use[FLASH_STORE_NUM_PAGES];
-    for (uint32_t i = 0U; i < FLASH_STORE_NUM_PAGES; i++) {
-        in_use[i] =
-            flash_store_page_in_use((const uint8_t *) FLASH_STORE_PAGE_ADDR(i));
+    const uint8_t *page0 = (const uint8_t *) FLASH_STORE_PAGE_ADDR(0U);
+    const uint8_t *page1 = (const uint8_t *) FLASH_STORE_PAGE_ADDR(1U);
+
+    s_active_page =
+        flash_store_select_active_page(page0, page1, FLASH_STORE_PAGE_SIZE);
+
+    /* If the other page holds records too, a reset interrupted a
+     * compaction: the selection above already picked the complete copy,
+     * so finish the cleanup and return to the normal single-active-page
+     * state. */
+    uint32_t spare_page = 1U - s_active_page;
+    if (flash_store_page_in_use(spare_page == 0U ? page0 : page1,
+                                 FLASH_STORE_PAGE_SIZE)) {
+        (void) flash_store_erase_page(spare_page);
     }
 
-    if (in_use[0] && in_use[1]) {
-        /* A reset landed between "compacted copy fully written to the
-         * spare" and "old copy erased" in flash_store_erase_and_compact().
-         * Compaction is a lossless replay, so both pages agree on the
-         * latest-per-key state - arbitrarily prefer page 0 and finish the
-         * interrupted cleanup so the next boot/compaction sees the normal
-         * single-active-page state again. */
-        s_active_page = 0U;
-        (void) flash_store_erase_page(1U);
-    } else if (in_use[1]) {
-        s_active_page = 1U;
-    } else {
-        s_active_page = 0U; /* page 0 in use, or neither (first-ever boot) */
+    /* Reclaim superseded history now, while nothing is time-critical,
+     * rather than letting the page fill mid-session (where a full page
+     * drops records until the car next stops). Best-effort: on failure
+     * the active page is untouched and still restores below. */
+    if (flash_store_free_records(
+            (const uint8_t *) FLASH_STORE_PAGE_ADDR(s_active_page),
+            FLASH_STORE_PAGE_SIZE) < FLASH_STORE_BOOT_COMPACT_FREE_RECORDS) {
+        (void) flash_store_erase_and_compact();
     }
 
     flash_store_restore((const uint8_t *) FLASH_STORE_PAGE_ADDR(s_active_page),
@@ -420,12 +486,9 @@ flash_store_save_mag_cal(const mag_cal_result_t *cal)
 /* Reclaims space from superseded history by rewriting only the current
  * (latest-per-key) records - but into the SPARE page, not over the active
  * one. The active page is only erased (and only then does the spare
- * become active) once the rewrite has fully landed, so a brownout/reset
- * at any point up to and including a failed program leaves the active
- * page - and every gate/mag-cal it holds - completely untouched. Without
- * this, erasing the sole page before rewriting it (as this function used
- * to) meant a crash between the erase and the rewrite finishing lost
- * every gate and the mag-cal outright, with no fallback. */
+ * become active) once the rewrite has fully landed and been sealed with a
+ * completion marker, so a brownout/reset at any point leaves one page
+ * that flash_store_init() can identify as complete. */
 __attribute__((section(".ccmfunc"))) status_t
 flash_store_erase_and_compact(void)
 {
@@ -480,10 +543,15 @@ flash_store_erase_and_compact(void)
         }
     }
 
-    if ((n_gates + (have_mag_cal ? 1U : 0U)) * FLASH_STORE_RECORD_SIZE >
+    /* +1: the completion marker that closes the rewrite. */
+    if ((n_gates + (have_mag_cal ? 1U : 0U) + 1U) * FLASH_STORE_RECORD_SIZE >
         FLASH_STORE_PAGE_SIZE) {
         return STATUS_ERROR; /* shouldn't happen: fewer keys than slots */
     }
+
+    uint32_t generation;
+    (void) flash_store_page_generation(page, FLASH_STORE_PAGE_SIZE,
+                                        &generation);
 
     /* Erase the spare unconditionally, even if it looks blank: a prior
      * crash could have left a partial rewrite there from an attempt that
@@ -517,14 +585,22 @@ flash_store_erase_and_compact(void)
                                         &mag_cal_rec) != STATUS_OK) {
             return STATUS_ERROR;
         }
+        write_offset += FLASH_STORE_RECORD_SIZE;
     }
 
-    /* Commit: only now that the spare fully holds the compacted state is
-     * the old active page erased and the spare promoted. A reset between
-     * these two lines leaves both pages holding valid (and, since
-     * compaction is a lossless replay, equivalent) data - flash_store_
-     * init() resolves that tie and finishes this cleanup on the next
-     * boot. */
+    /* Commit point: the completion marker, written last, is what makes
+     * the spare authoritative. A reset before it lands leaves a
+     * marker-less partial copy that flash_store_init() discards in favour
+     * of the untouched active page; a reset after it - even one that
+     * leaves the old page half-erased below - makes flash_store_init()
+     * pick this copy (higher generation). */
+    flash_store_record_t done_rec;
+    flash_store_build_compact_done_record(generation + 1U, &done_rec);
+    if (flash_store_program_record(spare_page, write_offset, &done_rec) !=
+        STATUS_OK) {
+        return STATUS_ERROR;
+    }
+
     status_t erase_status = flash_store_erase_page(s_active_page);
     s_active_page = spare_page;
     return erase_status;

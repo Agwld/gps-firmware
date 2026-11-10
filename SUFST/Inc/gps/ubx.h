@@ -78,7 +78,7 @@ typedef struct {
     uint8_t month, day, hour, min, sec;
     uint8_t valid;      /* validDate/validTime/fullyResolved bits */
     uint8_t fix_type;   /* 0 none, 2 2D, 3 3D, 4 GNSS+DR */
-    uint8_t flags;      /* gnssFixOK in bit 0, carrSoln in bits 6-7 */
+    uint8_t flags;      /* UBX_PVT_FLAG_* */
     uint8_t num_sv;
     int32_t lon_1e7;    /* deg * 1e-7 */
     int32_t lat_1e7;
@@ -111,6 +111,12 @@ typedef struct {
 
 #define UBX_TM2_FLAG_NEW_RISING  (1U << 7)
 #define UBX_TM2_FLAG_NEW_FALLING (1U << 2)
+
+/* ubx_nav_pvt_t.flags bits */
+#define UBX_PVT_FLAG_GNSS_FIX_OK     (1U << 0) /* fix within DOP/acc masks */
+#define UBX_PVT_FLAG_DIFF_SOLN       (1U << 1) /* differential corrections */
+#define UBX_PVT_FLAG_CARR_SOLN_SHIFT 6U        /* 0 none, 1 float, 2 fixed */
+#define UBX_PVT_FLAG_CARR_SOLN_MASK  (0x3U << UBX_PVT_FLAG_CARR_SOLN_SHIFT)
 
 /* ubx_nav_pvt_t.valid bits */
 #define UBX_PVT_VALID_DATE           (1U << 0)

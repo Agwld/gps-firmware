@@ -16,6 +16,10 @@ from PyQt6.QtWidgets import QGridLayout, QGroupBox, QLabel, QVBoxLayout, QWidget
 from gps_dashboard.enums import (
     CARRIER_SOLUTION_NAMES,
     FIX_TYPE_NAMES,
+    FUSION_STATUS_BITS,
+    LAP_STATUS_ARMED_BIT,
+    LAP_STATUS_DEGRADED_BIT,
+    LAP_STATUS_KNOWN_BITS,
     LAP_STATUS_RUNNING_BIT,
     MAG_CAL_STATUS_NAMES,
     SYS_EVENT_BITS,
@@ -179,7 +183,9 @@ class StatusPanel(QWidget):
         self._fields["yaw"].set_text(f"{s['yaw_deg']:.2f} deg")
         self._fields["pitch"].set_text(f"{s['pitch_deg']:.2f} deg")
         self._fields["roll"].set_text(f"{s['roll_deg']:.2f} deg")
-        self._fields["fusion_status"].set_text(f"0x{s['fusion_status']:02X}")
+        self._fields["fusion_status"].set_text(
+            describe_bits(int(s["fusion_status"]), FUSION_STATUS_BITS)
+        )
 
     def _on_gps_quality(self, s: dict) -> None:
         flags = s["flags"]
@@ -203,9 +209,18 @@ class StatusPanel(QWidget):
         self._fields["lap"].set_text(str(s["lap"]))
         self._fields["sector"].set_text(str(s["sector"]))
         self._fields["running_time"].set_text(_format_ms(s["running_time_ms"]))
-        running = "Running" if s["flags"] & LAP_STATUS_RUNNING_BIT else "Stopped"
-        extra_bits = s["flags"] & ~LAP_STATUS_RUNNING_BIT
-        text = running if extra_bits == 0 else f"{running} (0x{s['flags']:02X})"
+        flags = int(s["flags"])
+        if flags & LAP_STATUS_RUNNING_BIT:
+            text = "Running"
+        elif flags & LAP_STATUS_ARMED_BIT:
+            text = "Armed"  # start/finish placed, waiting for a crossing
+        else:
+            text = "Stopped"
+        if flags & LAP_STATUS_DEGRADED_BIT:
+            text += " - DEGRADED (no GPS fix / time lock)"
+        extra_bits = flags & ~LAP_STATUS_KNOWN_BITS
+        if extra_bits:
+            text += f" (0x{flags:02X})"
         self._fields["lap_flags"].set_text(text)
 
     def _on_lap_event(self, s: dict) -> None:

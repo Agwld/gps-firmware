@@ -211,3 +211,39 @@ def test_simulate_clamps_unrealistic_accel_instead_of_crashing():
     t.start()
     t.join(timeout=5.0)
     assert not t.is_alive(), "unrealistic track parameters crashed the simulator"
+
+
+def test_simulate_next_sector_slot_fills_first_free():
+    """GATE_SET with slot 0xFE (what the lap button's short press and the
+    control panel send) fills the first free sector slot, as the node does."""
+    decoder = Decoder()
+    source = SimulateCanSource(decoder)
+    stop = threading.Event()
+
+    phase = ["setup"]
+    saw_slot1_valid = [False]
+
+    def consume():
+        for raw in source.frames(stop):
+            decoded = decoder.decode(raw)
+            if decoded is None or decoded.name != "GPS_Gate":
+                continue
+            idx = int(decoded.signals["gate_index"])
+            valid = bool(decoded.signals["gate_flags"] & 0x01)
+
+            if phase[0] == "setup":
+                # A new start/finish clears every sector; then ask for the
+                # next free one, which must be slot 1.
+                source.send(decoder.encode("GPS_Command", {"cmd": 0x01, "arg0": 0, "arg1": 0}))
+                source.send(decoder.encode("GPS_Command", {"cmd": 0x01, "arg0": 0xFE, "arg1": 0}))
+                phase[0] = "wait"
+            elif phase[0] == "wait" and idx == 1 and valid:
+                saw_slot1_valid[0] = True
+                stop.set()
+                return
+
+    t = threading.Thread(target=consume)
+    t.start()
+    t.join(timeout=10.0)
+    stop.set()
+    assert saw_slot1_valid[0], "next-sector GATE_SET did not fill slot 1"

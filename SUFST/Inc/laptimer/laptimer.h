@@ -18,9 +18,15 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+/* laptimer_update() return bits: what completed during that sample. */
+#define LAPTIMER_EVT_LAP    (1U << 0) /* a lap: see laptimer_get_last_lap_ms() */
+#define LAPTIMER_EVT_SECTOR (1U << 1) /* a sector: laptimer_get_last_sector_ms() */
+
 /** @brief Reset all timing state (lap count, running flag, clocks). Does
  *         not touch stored gates - call gates_init()/gates_clear_all()
- *         separately if a full reset is wanted. */
+ *         separately if a full reset is wanted. Also the right call when
+ *         the start/finish gate is moved or removed: the lap in progress
+ *         was measured from a line that no longer exists. */
 void laptimer_init(void);
 
 /**
@@ -31,14 +37,21 @@ void laptimer_init(void);
  * crossing starts the clock on the first lap, or completes/restarts the
  * lap on later crossings (subject to LAP_MIN_LAP_TIME_MS debounce - see
  * laptimer.c). Sector gate crossings complete/restart the current sector
- * without touching the lap clock.
+ * without touching the lap clock; each sector gate counts at most once
+ * per lap. Completing a lap also completes its final sector (last sector
+ * gate -> finish line) if any sector gate was crossed during it.
+ *
+ * Both timestamps must be real GPS time-of-week: the caller must not
+ * feed samples taken before its time source is valid.
  *
  * @param itow_ms      GPS time-of-week (ms) at the current sample.
  * @param prev_itow_ms GPS time-of-week (ms) at the previous sample.
+ * @return LAPTIMER_EVT_* bits for what completed during this sample
+ *         (0 for the vast majority of calls).
  */
-void laptimer_update(float east_m, float north_m, float prev_east_m,
-                      float prev_north_m, uint32_t itow_ms,
-                      uint32_t prev_itow_ms);
+uint8_t laptimer_update(float east_m, float north_m, float prev_east_m,
+                         float prev_north_m, uint32_t itow_ms,
+                         uint32_t prev_itow_ms);
 
 /** @brief True once the first start/finish crossing has started a lap. */
 bool laptimer_is_running(void);

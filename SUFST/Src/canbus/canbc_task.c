@@ -33,13 +33,16 @@
  * All four are little-endian (@1) signed i16, so for a DBC start bit N
  * the byte pair is [N/8 .. N/8+1] LSB-first: RL is bytes[0:1], RR
  * bytes[2:3], FL bytes[4:5], FR bytes[6:7] - ascending start bit does
- * NOT mean FR-first, it means RL-first. This previously had the byte
- * order right but the FR/FL/RR/RL labels backwards; harmless for
- * today's symmetric 4-wheel average (sum doesn't care about labels)
- * but would silently pick the wrong pair if the planned "average of
- * the two least-slip-prone wheels" refinement lands without re-fixing
- * this. */
+ * NOT mean FR-first, it means RL-first.
+ *
+ * Only the front-left sensor gives a trustworthy reading on the car -
+ * the other three channels are known to fail - so FL is used on its own
+ * and the rest of the frame is ignored. (Averaging all four would let
+ * one dead channel reading 0 drag the "speed" down by a quarter.) Only
+ * acted on when KF_WHEELSPEED_AIDING is enabled (board_config.h); the
+ * frame is received regardless. */
 #define CAN_ID_WHEEL_SPEEDS 0x251U
+#define WHEEL_SPEEDS_FL_BYTE 4U /* WHEEL_FL_SPEED: start bit 32 */
 
 /* Staggered periodic broadcast rota: each entry fires every
  * period_slots * CANBC_SLOT_MS, offset by phase_slot so different-rate
@@ -240,9 +243,15 @@ send_rota_entry(uint32_t which, const canbc_state_t *s)
         rr = (uint8_t) ((rr + 1U) % LAP_MAX_GATES);
 
         const canbc_gate_t *g = &s->gates[idx];
+        /* Stored as an atan2 result in (-pi, pi]; broadcast as [0, 360).
+         * A value a float-rounding hair under zero would round up to
+         * exactly 360.0 after the += below, hence the second fold. */
         float heading_deg = g->heading_rad * (180.0f / 3.14159265358979f);
         if (heading_deg < 0.0f) {
             heading_deg += 360.0f;
+        }
+        if (heading_deg >= 360.0f) {
+            heading_deg -= 360.0f;
         }
         can_gps_gate_t m = {
             idx,
@@ -273,14 +282,12 @@ dispatch_rx_command(const can_gps_command_t *cmd)
     switch (cmd->cmd) {
     case CAN_CMD_GATE_SET:
     case CAN_CMD_GATE_CLEAR:
+    case CAN_CMD_CONFIG_SAVE: /* imu_task owns the flash store */
         xQueueSend(g_gate_cmd_queue, &out, 0);
         break;
     case CAN_CMD_MAG_CAL_START:
     case CAN_CMD_MAG_CAL_STOP:
         xQueueSend(g_mag_cal_cmd_queue, &out, 0);
-        break;
-    case CAN_CMD_CONFIG_SAVE:
-        xQueueSend(g_sys_cmd_queue, &out, 0);
         break;
     case CAN_CMD_NMEA_CFG:
         xQueueSend(g_nmea_cfg_queue, &out, 0);
@@ -316,6 +323,23 @@ canbc_hw_init(void)
 
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
         Error_Handler();
+    }
+}
+
+/* Bus-off (a shorted or badly disturbed bus drove the transmit error
+ * counter past 255) is not self-clearing on this controller: it parks
+ * itself in INIT mode and stays silent until software clears INIT, after
+ * which it rejoins once it has seen the 129 x 11 recessive bits the CAN
+ * spec requires. Without this the node would stay off the bus until the
+ * next power cycle after a single wiring glitch. Checked once a second,
+ * so a bus that is still faulty isn't hammered. */
+static void
+recover_from_bus_off(void)
+{
+    FDCAN_ProtocolStatusTypeDef status;
+    if (HAL_FDCAN_GetProtocolStatus(&hfdcan1, &status) == HAL_OK &&
+        status.BusOff != 0U) {
+        CLEAR_BIT(hfdcan1.Instance->CCCR, FDCAN_CCCR_INIT);
     }
 }
 
@@ -355,7 +379,21 @@ canbc_task_main(void *argument)
             dispatch_rx_command(&cmd);
         }
 
+        if (slot == 0U) {
+            recover_from_bus_off();
+        }
+
         slot = (slot + 1U) % CANBC_SLOT_WRAP;
+
+        /* If this slot overran (only possible when frames can't leave -
+         * nothing on the bus to ACK them, or bus-off - so every send
+         * waits out its timeout), drop the backlog instead of letting
+         * vTaskDelayUntil() replay every missed slot back-to-back the
+         * moment the bus returns. */
+        if ((xTaskGetTickCount() - last_wake) >
+            pdMS_TO_TICKS(2U * CANBC_SLOT_MS)) {
+            last_wake = xTaskGetTickCount();
+        }
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CANBC_SLOT_MS));
     }
 }
@@ -381,18 +419,11 @@ HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
             can_unpack_gps_command(data, &cmd);
             xQueueSendFromISR(g_can_rx_cmd_queue, &cmd, &hp_woken);
         } else if (header.Identifier == CAN_ID_WHEEL_SPEEDS) {
-            int16_t rl = (int16_t) (uint16_t) (data[0] | (data[1] << 8));
-            int16_t rr = (int16_t) (uint16_t) (data[2] | (data[3] << 8));
-            int16_t fl = (int16_t) (uint16_t) (data[4] | (data[5] << 8));
-            int16_t fr = (int16_t) (uint16_t) (data[6] | (data[7] << 8));
-
-            /* Simple 4-wheel average: a safe default independent of
-             * drivetrain layout. The plan's "average of the two non-
-             * driven/least-slip-prone wheels" refinement is deferred to
-             * bench testing once the drivetrain configuration is known -
-             * the byte layout itself is now confirmed above. */
-            float speed_mps =
-                0.01f * 0.25f * (float) (fr + fl + rr + rl);
+            /* Front-left only - see CAN_ID_WHEEL_SPEEDS above. */
+            int16_t fl = (int16_t) (uint16_t) (
+                data[WHEEL_SPEEDS_FL_BYTE] |
+                (data[WHEEL_SPEEDS_FL_BYTE + 1U] << 8));
+            float speed_mps = 0.01f * (float) fl;
             xQueueOverwriteFromISR(g_wheelspeed_queue, &speed_mps,
                                     &hp_woken);
         }

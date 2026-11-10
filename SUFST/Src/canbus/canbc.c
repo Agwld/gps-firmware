@@ -137,13 +137,19 @@ canbc_state_set_lap(uint16_t lap, uint32_t running_time_ms, uint8_t sector,
 }
 
 void
-canbc_state_set_temp(float mcp9800_temp_c, float imu_temp_c,
-                      float mcu_temp_c)
+canbc_state_set_board_temp(float mcp9800_temp_c, float mcu_temp_c)
 {
     lock();
     s_state.mcp9800_temp_c = mcp9800_temp_c;
-    s_state.imu_temp_c = imu_temp_c;
     s_state.mcu_temp_c = mcu_temp_c;
+    unlock();
+}
+
+void
+canbc_state_set_imu_temp(float imu_temp_c)
+{
+    lock();
+    s_state.imu_temp_c = imu_temp_c;
     unlock();
 }
 

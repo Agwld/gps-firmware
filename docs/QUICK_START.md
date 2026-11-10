@@ -2,111 +2,76 @@
 
 ## Prerequisites
 
-Install the ARM embedded toolchain:
+You need the Arm GNU toolchain (`arm-none-eabi-gcc`, 13.x), CMake ≥ 3.22 and
+Ninja on your `PATH`.
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install gcc-arm-none-eabi binutils-arm-none-eabi arm-none-eabi-gdb cmake ninja-build
+sudo apt-get install gcc-arm-none-eabi cmake ninja-build
 
-# macOS (homebrew)
-brew install arm-none-eabi-gcc cmake ninja
-
-# Windows
-# Download GNU Arm Embedded Toolchain from https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
-# Add bin/ directory to PATH
+# macOS
+brew install --cask gcc-arm-embedded && brew install cmake ninja
 ```
 
-Verify the install:
+On Windows, install the [Arm GNU toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+or reuse the copy inside STM32CubeIDE
+(`…/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.<version>/tools/bin`),
+and add its `bin` directory to `PATH`.
+
 ```bash
-arm-none-eabi-gcc --version  # should show 13.x or later
-cmake --version             # should show 3.27 or later
+arm-none-eabi-gcc --version
+cmake --version
 ```
 
-## Build the firmware (Release)
+## Build
 
 ```bash
-cd /path/to/gps-firmware
 cmake --preset Release
 cmake --build --preset Release
 ```
 
-**Output:** `build/gps_firmware.elf` (~58 KB, fits comfortably in 128 KB flash)
+Output: `build/Release/gps-firmware.{elf,hex,bin}` — about 66 KB of the 124 KB
+code flash. The build prints the memory use at the end.
 
-## Build the firmware (Debug)
+For on-target debugging use the `Debug` preset instead (`build/Debug/`, ~110 KB).
 
-Debug build includes symbols and `-O0` optimization (useful for debugging on hardware):
+## Run the unit tests
 
-```bash
-cmake --preset Debug
-cmake --build --preset Debug
-```
-
-**Output:** `build/gps_firmware.elf` (~94 KB)
-
-## Run unit tests
-
-No ARM toolchain needed—tests run on your native machine:
+No ARM toolchain needed — they run on your machine:
 
 ```bash
-cmake -B build-host -DGPS_HOST_TESTS=ON -G Ninja
-cmake --build build-host
-ctest --test-dir build-host -V
+cmake --preset Test
+cmake --build --preset Test
+ctest --preset Test
 ```
 
-**Expected:** 11/11 tests pass (UBX parsing, CAN, fusion, timing, persistence, etc.)
+Expected: 11/11 pass.
 
-## Upload to the board
+## Flash the board
 
-Using a STLINK-V2 or equivalent:
+With an ST-LINK on the SWD header:
 
 ```bash
-# Install STM32 tools (if not already present)
-sudo apt-get install stlink-tools  # Linux
-brew install stlink                 # macOS
-
-# Program the board
-st-flash write build/gps_firmware.elf 0x08000000
+STM32_Programmer_CLI -c port=SWD -w build/Release/gps-firmware.hex -v -rst
 ```
 
-Alternatively, use STM32CubeProgrammer GUI or your IDE's built-in programmer.
+or `st-flash write build/Release/gps-firmware.bin 0x08000000`.
 
-## Quick verification
+Check the version you flashed with
+`strings build/Release/gps-firmware.bin | grep gps-firmware`.
 
-Once programmed:
-
-1. **Check the build output**:
-   ```bash
-   arm-none-eabi-size build/gps_firmware.elf
-   ```
-   Should show CODE well under 131072 (128 KB flash on the STM32G431CB)
-
-2. **Inspect the binary**:
-   ```bash
-   arm-none-eabi-objdump -h build/gps_firmware.elf
-   ```
-   Verify `.text` section is < 128 KB
-
-3. **Run the test suite**:
-   ```bash
-   cd build-host
-   ctest -V
-   ```
+Then follow the bring-up checklist in [DEVELOPER.md](DEVELOPER.md#bring-up-checklist).
 
 ## Next steps
 
-- **[DEVELOPER.md](DEVELOPER.md)** — Detailed build system, debugging, contributing
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — How the firmware works
-- **[DATASHEET.md](DATASHEET.md)** — Hardware, pinouts, CAN messages
+- **[DEVELOPER.md](DEVELOPER.md)** — build options, tests, flashing, debugging
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the firmware works
+- **[DATASHEET.md](DATASHEET.md)** — hardware, pins, CAN messages
 
 ## Common issues
 
 | Issue | Fix |
 |-------|-----|
-| `arm-none-eabi-gcc: command not found` | Install ARM toolchain and add bin/ to PATH |
-| CMake preset not found | Run `cmake --list-presets` to see available presets |
-| Flash size error (code > 65536) | Use CB variant (128 KB): the build defaults to it |
-| Tests fail with `libm` error | Update GCC (needs 13.x+); the old prebuilt libm has a bug |
-
----
-
-Ready to develop? Go to [DEVELOPER.md](DEVELOPER.md) for the full guide.
+| `arm-none-eabi-gcc: command not found` | Add the toolchain's `bin/` to `PATH` |
+| `No such preset` | Run CMake from the repository root; `cmake --list-presets` |
+| `undefined reference to '__errno'` | Don't remove `Core/Src/syscalls_errno.c` or `-fno-math-errno` |

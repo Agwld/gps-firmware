@@ -101,7 +101,7 @@ This document captures design rationale, known limitations, and planned improvem
 
 **Impact**: None in practice (timing has been validated by hand on real data), but a formal SIL harness would reduce validation burden for future changes.
 
-**Effort to implement**: ~1–2 weeks (write synthetic track generator, replay harness, comparison logic, documentation).
+**Effort to implement**: ~1–2 weeks (write synthetic track generator, replay harness, comparison logic, documentation). `tests/test_laptimer.c` already replays synthetic laps through the lap timer alone.
 
 ### RTK ready in hardware, needs a correction source
 
@@ -115,15 +115,15 @@ This document captures design rationale, known limitations, and planned improvem
 
 **Alternative considered**: routing RTCM through the MCU (JP7 1‑2 → USART2 RX → forward over I2C). Rejected for now: the hardware path is zero-CPU and zero-firmware; revisit only if corrections need to arrive over CAN telemetry instead of RS232.
 
-### No wheel-speed aiding integration
+### Wheel-speed aiding disabled by default
 
-**What**: The 6-state KF is designed to accept wheel-speed corrections (kf6_correct_speed), but the CAN input (0x251, Wheel_Speeds from the VCU) is parsed but not wired.
+**What**: The KF can take a wheel-speed correction (`kf6_correct_speed`) from the VCU's `Wheel_Speeds` frame (0x251). Only the **front-left** sensor reads reliably on the car (the other channels fail), so only FL is used. The path is fully wired but compiled out: `KF_WHEELSPEED_AIDING` is 0 in `board_config.h`.
 
-**Why missing**: VCU integration and validation pending (depends on VCU CAN availability).
+**Why off**: Unvalidated on the car. The speed is fused ungated along the AHRS heading, so FL slip/lock-up or a magnetometer heading error would pull the velocity estimate — and every gate-crossing time — away from GPS.
 
-**Impact**: None in practice (IMU accel integration keeps velocity coherent enough between GPS fixes), but would improve velocity estimate during GPS dropouts (tunnels, overpasses).
+**Impact**: None with good sky view. It would help ride out GPS dropouts.
 
-**Effort to enable**: ~30 min (one function call in imu_task's GPS correction loop).
+**To enable**: log FL speed against GPS speed on track (braking and cornering included), then set `KF_WHEELSPEED_AIDING` to 1.
 
 ### Gate timing jitter at very low speeds
 
@@ -137,21 +137,24 @@ This document captures design rationale, known limitations, and planned improvem
 
 ### Flash store compaction is blocking
 
-**What**: `flash_store_erase_and_compact()` is a blocking operation that takes ~100 ms (flash erase + rewrite).
+**What**: `flash_store_erase_and_compact()` erases two 2 KB pages; each erase stalls the whole CPU (the HAL flash driver runs from flash) for tens of milliseconds.
 
-**Why**: Deliberate (atomic write, no corruption risk), but breaks real-time guarantees.
+**Why accepted**: It only runs at boot (when fewer than 32 record slots are free) or, on `CONFIG_SAVE` or a full page, while the fused speed says the car is stopped. Single record appends (gate edits, mag-cal saves) stall for well under a millisecond and happen at any speed.
 
-**Impact**: Timing task will stall for ~100 ms during compaction. Compaction only runs when requested (CAN_CMD_CONFIG_SAVE) and after the car is judged stationary, so in practice it doesn't affect racing.
+**Mitigation if ever needed**: move the HAL flash routines into RAM, or split the work across loop iterations.
 
-**Mitigation**: Could be refactored to split into chunks and interleave with other tasks, but adds complexity. Current approach is safe and sufficient.
+### Minimum lap time
+
+`LAP_MIN_LAP_TIME_MS` (10 s) rejects start/finish re-crossings sooner than that, to stop jitter at the line counting as laps. A shorter course (e.g. skidpad) needs it lowered.
 
 ## Future enhancements
 
 ### Immediate (next 1–2 sprints)
 
+- [ ] **Bench bring-up** — Confirm sensor bring-up (IMU DRDY at 104 Hz, magnetometer via the sensor hub, F9P configuration over I2C, PPS lock), measured CPU load, and stack high-water marks
 - [ ] **Field testing on real hardware** — Validate timing accuracy, lap detection, gate persistence against a known-good timing reference (MoTeC, StopWatch, etc.)
 - [ ] **Dashboard rendering on physical in-car display** — Integrate the gate/track rendering (currently only on desktop dashboard) into the physical STAG 12 display unit
-- [ ] **VCU wheel-speed aiding** — Wire up the 0x251 Wheel_Speeds message to kf6_correct_speed() for improved velocity during GPS dropout
+- [ ] **Wheel-speed aiding** — Validate front-left speed against GPS, then enable `KF_WHEELSPEED_AIDING`
 
 ### Medium-term (next season)
 
@@ -170,15 +173,13 @@ This document captures design rationale, known limitations, and planned improvem
 
 ### Unit tests (in-place)
 
-All testable logic (fusion, protocols, timing, persistence) is exercised by host-side unit tests. These pass and are run on every commit.
+The pure-C modules (fusion, protocols, timing, persistence logic) are exercised by host-side unit tests (`ctest --preset Test`). There is no CI: run them before committing.
 
-**Coverage**: ~90% of critical paths. Not covered: FreeRTOS task scheduling, hardware drivers (SPI, CAN, UARTs), sensor samples (physical IMU + GPS data is not synthetic).
+**Not covered**: the FreeRTOS tasks themselves, hardware drivers (SPI, I2C, CAN, UART, flash programming), and real sensor data.
 
 ### Simulation
 
-The desktop dashboard includes a physics simulator (`tools/dashboard/sim`) that renders synthetic car motion through a realistic circuit and validates lap timing in isolation. Used for track setup testing and driver training.
-
-**Validity**: Simulator uses realistic car dynamics (acceleration, turning, speed profiles) but synthetic GPS data (injected at 20 Hz with configurable noise). Timing logic is the same as on-vehicle.
+The desktop dashboard includes a simulated CAN source (`tools/dashboard/src/gps_dashboard/can_sources/simulate.py`) that drives a synthetic car round a circuit and emits the node's CAN messages, for exercising the dashboard without hardware. It re-implements the lap logic in Python — it does **not** run or validate the firmware's timing code.
 
 ### Hardware validation (pending)
 
@@ -192,30 +193,25 @@ Once real hardware is available:
 
 ### CPU load
 
-Measured via FreeRTOS `configGENERATE_RUN_TIME_STATS` using TIM3 (already free-running for PPS). See [DEVELOPER.md](DEVELOPER.md) for breakdown.
-
-**Current**: ~32% load, leaving 68% idle. Could handle additional tasks (e.g., SD logging, advanced sensor processing) without issues.
+Reported live in `GPS_Status.cpu_load_pct`, from FreeRTOS run-time stats clocked by the TIM3 microsecond tick. **Not yet measured on hardware.**
 
 ### Memory usage
 
 ```bash
-arm-none-eabi-size -A build/gps_firmware.elf
+arm-none-eabi-size -A build/Release/gps-firmware.elf
 ```
 
-**Current**: ~58 KB text + RO data (45% of 128 KB flash). Each task stack is <2 KB (average utilization ~60%). Could fit additional features or more aggressive optimization.
+**v1.0.0**: Release 65.6 KB flash (52 % of 124 KB), 17.9 KB RAM (80 % of 22 KB). Debug 109.9 KB flash (87 %) — the Debug build is the tighter constraint. Stack sizes come from `-fstack-usage`; see `SUFST/Inc/sys/app.h`.
 
 ### CAN bandwidth
 
-Current TX load: ~1.5 KB/s aggregate (mostly from 100 Hz IMU broadcast). CAN bus at 1 Mbps can handle up to ~100 KB/s without congestion. Plenty of headroom.
+About 325 frames/s (two 100 Hz IMU frames, 50 Hz attitude, 20 Hz position/velocity, the rest slower) — roughly 4 % of a 1 Mbit/s bus.
 
 ## Common gotchas for future maintainers
 
 ### Changing the GPS update rate
 
-The KF is designed for 20 Hz GPS (with 16-entry history ring for delayed-state correction). If you increase the GPS rate to 25+ Hz:
-1. Increase the history ring size in `kf6.c` (`KF_HISTORY_SIZE`)
-2. Adjust the KF gain matrices (they're calibrated for 20 Hz gaps)
-3. Update the boot config in `gps_task.c` to request the new rate
+The rate is `GPS_NAV_RATE_HZ` in `board_config.h`; `gps_config.c` derives the receiver's measurement period from it. Above 20 Hz the F9P needs fewer constellations than GPS + Galileo. The KF history ring (`KF6_HISTORY_LEN`, 16 steps ≈ 150 ms) must still cover the fix latency, and `NMEA_OUT_RATE_MAX_HZ` follows the fix rate automatically.
 
 ### Changing gate crossing sensitivity
 

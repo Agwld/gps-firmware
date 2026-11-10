@@ -1,421 +1,244 @@
 # Architecture — How the GPS firmware works
 
-This document covers the design and implementation of the STAG 12 GPS node firmware.
+Design and implementation of the STAG 12 GPS node firmware (v1.0.0). For pins,
+CAN signals and memory figures see [DATASHEET.md](DATASHEET.md); for the
+reasoning behind the bigger choices see [NOTES.md](NOTES.md).
 
 ## System overview
 
-The firmware runs on an STM32G431 and orchestrates three main data flows:
+The firmware runs on an STM32G431 under FreeRTOS, with every task, queue and
+mutex allocated statically at start-up. It does four things:
 
-1. **Sensor acquisition** — GNSS (20 Hz) and IMU (104 Hz) data streams
-2. **Fusion pipeline** — Real-time blending of GPS and IMU into a smooth position/attitude estimate
-3. **Lap timing** — Gate crossing detection and time-stamping on the fused estimate
-4. **CAN broadcast** — Position, attitude, IMU, lap times, status at various rates
+1. **Acquire** GNSS (u-blox ZED-F9P, 20 Hz) and inertial data (LSM6DSO32 +
+   IIS2MDC, 104 Hz).
+2. **Fuse** them into a position, velocity and attitude estimate at 104 Hz.
+3. **Time laps** by detecting crossings of driver-placed gates in that estimate,
+   stamped in GPS time.
+4. **Publish** everything on CAN (and a NMEA stream to the MoTeC logger).
 
-All tasks run on FreeRTOS with static allocation (no heap), mirroring the team's firmware style.
+```
+ LSM6DSO32 ─SPI/DMA─┐                       ┌─► CAN broadcast (can_task)
+ IIS2MDC (via hub) ─┤                       │
+                    ▼                       │
+              imu_task (104 Hz) ────────────┤
+   AHRS ─► KF predict ─► KF correct ◄─ fix  │
+          ─► gates / lap timer ─► flash     │
+                    ▲                       │
+ ZED-F9P ─UART/DMA─► gps_task ──NAV-PVT─────┼─► aux_task ─► NMEA ─► MoTeC
+         ─PPS──────► TIM3 capture (time)    │
+ lap button ───────► sys_task ──gate cmds───┘   (LEDs, temps, watchdog)
+```
+
+## Tasks
+
+| Task | Prio | Driven by | Owns |
+|------|------|-----------|------|
+| `imu_task` | 6 | IMU data-ready interrupt (104 Hz), 20 ms timeout fallback | AHRS, KF, geodesy origin, gates, lap timer, mag calibration, flash store |
+| `gps_task` | 5 | USART3 idle-line / DMA events | F9P configuration, UBX parser, PPS pairing, GPS link supervision |
+| `can_task` | 3 | 10 ms slots | FDCAN1: broadcast rota, Lap_Event TX, command dispatch, bus-off recovery |
+| `aux_task` | 2 | NMEA rate (10 Hz default) | USART3 TX |
+| `sys_task` | 1 | 20 ms | Lap button, LEDs, temperatures, watchdog refresh, status frame |
+
+Single ownership is the main concurrency rule: each piece of state is touched
+by exactly one task, and the others talk to it through queues. The only shared
+data structures are:
+
+- **`canbc` state** — a mutex-guarded struct every task publishes its latest
+  values into; `can_task` takes a snapshot each slot and packs frames from it,
+  so no producer ever touches FDCAN.
+- **The I2C2 mutex** — the bus is shared by `gps_task` (F9P configuration) and
+  `sys_task` (MCP9800).
+- **The system event group** — ready/fault flags (`SYS_EVT_*`), broadcast as
+  `GPS_Status.fault_bits` and used to drive the LEDs.
+
+Queues ([`app.h`](../SUFST/Inc/sys/app.h)): CAN RX → `can_task`; gate,
+config-save and mag-cal commands → `imu_task`; latest NAV-PVT → `imu_task` and
+`aux_task` (separate length-1 overwrite queues, so neither steals the other's
+copy); Lap_Event → `can_task`; NMEA config → `aux_task`; wheel speed →
+`imu_task`.
+
+## Time base
+
+All lap times are in **GPS time-of-week** (iTOW, ms), not MCU time.
+
+- TIM3 counts at 1 MHz; its rollover interrupt extends it to a 32-bit
+  microsecond tick ([`timebase.c`](../SUFST/Src/fusion/timebase.c)). The tick
+  read and the PPS capture both account for a rollover that is pending but not
+  yet counted.
+- The F9P's 1 PPS edge is captured on TIM3_CH2. `gps_task` pairs each captured
+  edge with the GPS second it marks (the next NAV-PVT's iTOW rounded to the
+  second, once the receiver reports time as valid).
+- The last two pairs give both an offset and the MCU clock's actual rate, so
+  `tick → iTOW` (and back) tracks crystal drift.
+
+Until the first PPS edge is paired the node is not *time locked*: lap timing
+is suspended and the KF treats each fix as current rather than back-dating it.
 
 ## Sensor fusion
 
-### Why fusion?
+### Attitude — Mahony AHRS ([`ahrs.c`](../SUFST/Src/fusion/ahrs.c))
 
-Raw GPS at 20 Hz is too slow and too latent (20–60 ms post-facto) for sub-metre gate crossing at racing speeds. The solution is to run a **continuous estimate at IMU rate (104 Hz)** and treat each GPS fix as a *correction* to that estimate, not as the position itself.
+A complementary filter on the unit quaternion: gyro rates are integrated every
+sample; the accelerometer (gravity) corrects roll/pitch and the calibrated
+magnetometer corrects yaw, through a proportional term plus an integral term
+that doubles as gyro-bias estimation. If the magnetometer stops delivering
+samples the filter carries on from gyro + accel alone (yaw then drifts, and the
+fusion status shows it).
 
-```
-IMU (104 Hz)              GPS (20 Hz)
- ↓                         ↓
-Mahony AHRS     →←        ENU conversion
-(attitude)       |         ↓
-                 v         ↓
-            6-state Kalman filter
-                 ↓
-        fused position/velocity
-                 ↓
-         ← lap timing, CAN, NMEA
-```
+### Position/velocity — 6-state Kalman filter ([`kf6.c`](../SUFST/Src/fusion/kf6.c))
 
-### Mahony AHRS (`ahrs.c`)
+State `[e, n, u, ve, vn, vu]` in a local East-North-Up frame.
 
-A 9-DOF complementary filter that computes attitude (yaw/pitch/roll) from:
-- **Gyro** — primary attitude rate (integrated)
-- **Accel** — gravity reference (corrects pitch/roll drift)
-- **Mag** — heading reference (corrects yaw drift)
+- **Predict** (104 Hz): body acceleration rotated into ENU by the AHRS
+  quaternion, gravity removed, integrated into velocity and position.
+- **Correct** (each valid GPS fix): position and velocity from NAV-PVT, with
+  noise from the receiver's own hAcc/sAcc (floored at 0.5 m and 0.1 m/s).
+- **Delayed-state correction**: a fix describes the car 20–60 ms in the past.
+  The filter keeps the last 16 predict steps; a fix is applied at the history
+  entry matching its GPS time and every later step is replayed.
+- **Outlier gate**: a fix whose innovation fails a 99.9 % chi-squared test is
+  rejected.
+- **Divergence recovery**: if 10 position fixes in a row are rejected, the
+  filter is taken to be the one that is wrong (e.g. after dead-reckoning
+  through a GPS outage) — it re-opens its covariance and snaps back onto GPS.
+  `imu_task` treats that jump as a break in the trajectory for gate crossing.
+- **Wheel-speed aiding** (`kf6_correct_speed`, front-left wheel only, along the
+  AHRS heading) exists but is compiled out unless `KF_WHEELSPEED_AIDING` is
+  set in [`board_config.h`](../SUFST/Inc/board/board_config.h).
 
-```
-Quaternion update every IMU sample:
-q_new = q_old + (0.5 * w) * q_old * dt + Kp * accel_error + Ki * integral(accel_error)
-```
+If the IMU fails, the loop keeps running on its 20 ms timeout with a
+zero-acceleration sample, so the KF becomes a constant-velocity model between
+fixes: position, speed and lap timing continue at GPS quality.
 
-**Key properties:**
-- Integral term estimates and cancels gyro bias (no separate bias state needed)
-- Runs at 104 Hz (every IMU sample), so attitude is always up-to-date
-- No gimbal lock (quaternions handle all orientations)
-- Output: unit quaternion `q = [qx, qy, qz, qw]`
+### Frames ([`geodesy.c`](../SUFST/Src/fusion/geodesy.c))
 
-### 6-state Kalman filter (`kf6.c`)
-
-State vector: `[pos_e, pos_n, pos_u, vel_e, vel_n, vel_u]` (East-North-Up frame set at first GPS fix)
-
-**Predict step** (every 104 Hz IMU sample):
-- Rotate IMU accel into ENU using AHRS attitude
-- Integrate accel to update velocity: `vel_new = vel_old + accel * dt`
-- Integrate velocity to update position: `pos_new = pos_old + vel * dt`
-
-**Correct step** (every GPS fix, ~20 Hz):
-- Convert GPS lat/lon to ENU relative to the frame origin
-- Compare fused position to GPS position → position error
-- Kalman gain blends this error back into the state (velocity damping included)
-- **Delayed-state rewind**: because a GPS fix is 20–60 ms old, the filter keeps a 16-entry ring of past predict steps; a correction rewinds to the matching history entry, applies the correction there, then replays all subsequent predicts to get the final state right
-
-**Result:** A smooth position estimate at 104 Hz with GPS as the long-term truth and IMU providing short-term coherence and inter-sample resolution.
-
-### Coordinate frames
-
-| Frame | Definition | Used for |
-|-------|-----------|----------|
-| **ECEF** | Earth-Centered-Earth-Fixed (WGS84) | GPS receiver coordinates |
-| **Geodetic** | lat/lon/height (degrees + metres) | User-facing gate positions, CAN broadcast (absolute) |
-| **ENU** | Local East-North-Up, origin at first GPS fix | Fusion state, gate crossing detection, CAN broadcast (relative) |
-| **Body** | Aircraft convention (roll/pitch/yaw) | Accel/gyro/mag interpretation, vehicle dynamics |
-
-Conversions:
-- **GPS lat/lon → ENU**: `geodesy.c` (flat-Earth approximation: valid for ~10 km tracks)
-- **ENU → lat/lon**: `geodesy.c` inverse (used when broadcasting gates)
-- **Body accel → ENU accel**: `ahrs.c` rotates via attitude quaternion
+The ENU origin is anchored on the first fix with hAcc ≤ 5 m after each boot;
+the KF is restarted at that moment so it starts at (0, 0, 0). Conversions use a
+flat-Earth tangent plane scaled by the WGS84 meridian and normal radii at the
+origin — well under a metre of error across a circuit. Latitude/longitude stay
+in double precision; ENU offsets are float.
 
 ## Lap timing
 
-### Gate representation
-
-A gate is a **point + heading in ENU**, treated as an infinite-width line perpendicular to that heading:
-
-```
-Heading = 45° (northeast)
-    ↑
-    │
-  ─ ─ ─ ← gate line (perpendicular to heading)
-    │
-    → car trajectory
-```
-
-Stored in flash as **absolute lat/lon** (int32_t 1e-7 degree) + heading (float rad), so gates survive power cycles even if the car moves. On origin-set (first GPS fix), all persisted gates are re-projected into the current ENU frame.
-
-### Crossing detection (`laptimer.c`)
-
-Every 104 Hz iteration:
-
-1. Compute the projection of the fused position along the heading vector:
-   ```
-   projection = (pos - gate_pos) · heading_unit_vector
-   ```
-2. Check for a sign change (position crossed the line)
-3. Check direction (must cross forward, not backward)
-4. Use linear interpolation between the current and previous sample for ~1 ms-class timing resolution
-
-```c
-// Pseudocode
-float proj_now = dot(pos_now - gate_pos, heading_dir);
-float proj_prev = dot(pos_prev - gate_pos, heading_dir);
-
-if ((proj_prev <= 0 && proj_now > 0) || sign change with valid direction) {
-    // Interpolate to find exact crossing time
-    float t_cross = -proj_prev / (proj_now - proj_prev);
-    timestamp = prev_timestamp + t_cross * dt;
-    on_crossing(gate_idx, timestamp);
-}
-```
-
-### Lap state machine
-
-Gates are organized in slots:
-- **Slot 0**: Start/finish line
-- **Slots 1–7**: Sector gates (up to 7 segments per lap)
-
-On each crossing:
-1. If **slot 0 (start/finish)** is crossed:
-   - If sector counter is 0, start a new lap
-   - If sector counter > 0, end the current lap and record total time
-   - Reset sector counter to 0
-2. If **slot 1–7** is crossed:
-   - Record the segment time (delta from previous gate)
-   - Increment sector counter
-   - Broadcast the segment time to the dashboard
-
-### Time-stamping
-
-All crossing times are expressed in **GPS time-of-week** (iTOW, 0–604799999 ms per week) via a PPS-disciplined mapping ([`timebase.c`](../SUFST/Src/fusion/timebase.c)):
-
-- TIM3_CH2 captures the rising edge of the 1 PPS signal from the ZED-F9P
-- A `tick ↔ iTOW` mapping is maintained: when PPS fires, we know the exact GPS time for that tick count
-- All fused positions are stamped with the TIM3 tick at which they were computed
-- On crossing, the tick is converted to iTOW (GPS time) using this mapping
-
-**Why GPS time, not MCU ticks?**
-- Times are meaningful across resets (reboot during a lap doesn't lose the crossing timestamp)
-- Times are comparable to external GPS-timestamped data (data logger, other vehicles)
-- PPS is nanosecond-accurate; we inherit that precision
-
-## Gate persistence
-
-### Flash storage format
-
-Gates are stored in the **last 2 KB page of flash** (0x1F800 on the STM32G431CB's 128 KB) as an **append-only log**:
-
-```c
-struct flash_store_record {
-    uint8_t kind;              // GATE, GATE_CLEAR_ALL, or MAG_CAL
-    uint8_t key;               // gate index (0–7)
-    uint8_t gate_valid;        // 1 = valid gate, 0 = cleared slot
-    uint8_t reserved;
-    int32_t payload[2];        // gate: [lat_1e7, lon_1e7]; mag_cal: [bias_xyz, scale_xyz]
-    float heading_rad;         // or scale/bias floats for mag_cal
-    uint32_t crc;              // CRC32 of all fields except crc itself
-};
-```
-
-Each record is 24 bytes. The page holds ~85 records before compaction is needed.
-
-### Restore sequence
-
-At boot, `flash_store_init()` scans the page:
-
-1. **For each gate record**: update the in-memory gate table (newest wins; cleared slots have `valid=0`)
-2. **For each clear-all record**: void all slots
-3. **Result**: in-memory gate table reflects the latest state
-
-Gates are then **deferred**: they're stored as absolute lat/lon until the first GPS fix anchors the frame origin. Once the origin is known, all valid gates are re-projected into ENU and placed into the gate crossing detector.
-
-### Persist on write
-
-When a gate is set or cleared (via steering wheel or CAN command):
-
-```
-set_gate(index, heading) →
-  ├─ place in ENU (for crossing detection)
-  ├─ compute absolute lat/lon from fused pos + origin
-  └─ append record to flash (with valid=1 or valid=0)
-```
-
-Flash writes are non-blocking on this MCU (using HAL DMA + CCM RAM for program ops).
-
-### Compaction
-
-The append-only log grows with every gate edit. To reclaim space, `flash_store_erase_and_compact()`:
-
-1. **Replay** the entire log to recover the current state
-2. **Erase** the flash page
-3. **Rewrite** only the latest valid gates (cleared/superseded entries vanish)
-
-Compaction is triggered by `CAN_CMD_CONFIG_SAVE` (via dashboard or the `sys_task` button) and waits for the car to be **judged stationary** to avoid disrupting real-time loops.
-
-## CAN broadcast
-
-### Message schedule
-
-The `can_task` runs at ~100 Hz (every 10.4 ms) and broadcasts staggered periodic messages:
-
-| ID | Name | Rate | Contents |
-|----|------|------|----------|
-| 0x6B0 | GPS_Position | 20 Hz | fused lat/lon |
-| 0x6B1 | GPS_Velocity | 20 Hz | speed, course, altitude, fix status |
-| 0x6B2 | GPS_Attitude | 50 Hz | yaw/pitch/roll (Euler), fusion status |
-| 0x6B3 | Lap_Status | 10 Hz | lap number, running time, sector, crossing status |
-| 0x6B4 | Lap_Event | event | steering wheel or TIM-TM2 button timestamp (GPS time) |
-| 0x6B5 | GPS_Quality | 5 Hz | accuracy (HDOP, VDOP), fix/RTK flags |
-| 0x6B6 | GPS_IMU_Accel | 100 Hz | raw calibrated accel (x, y, z) |
-| 0x6B7 | GPS_IMU_Gyro | 100 Hz | raw calibrated gyro (x, y, z) |
-| 0x6B8 | GPS_Temp | 1 Hz | board temp, IMU temp, MCU temp |
-| 0x6B9 | GPS_Status | 1 Hz | uptime, fault bits, CPU load |
-| 0x6BA | GPS_Mag | 10 Hz | magnetometer + calibration status |
-| 0x6BB | GPS_Frame_Origin | 1 Hz | ENU origin as absolute lat/lon |
-| 0x6BC | GPS_Gate | round-robin ~5 Hz | one gate per frame (index, east_m, north_m, heading_deg, valid) |
-| 0x6BD | GPS_Time | 1 Hz | GPS iTOW + UTC wall clock + validity flags (bus-wide time reference) |
-| 0x6BF | GPS_Command | RX | gate set/clear, mag-cal, config commands |
-
-### Signal scaling and precision
-
-Example: `GPS_Position` (0x6B0):
-```
-lat_deg = (int32_t raw_lat) * 1e-7   # ±90° in 10 cm increments
-lon_deg = (int32_t raw_lon) * 1e-7   # ±180° in 10 cm increments
-```
-
-Gate positions:
-```
-gate_east_m = (int16_t raw) * 0.1   # ±3276.7 m in 0.1 m increments
-gate_north_m = (int16_t raw) * 0.1
-gate_heading_deg = (uint16_t raw) * 0.1  # 0–360° in 0.1° increments
-```
-
-All scaling is done at pack time (firmware) and unpack time (dashboard/logger), preserving raw precision in CAN.
-
-## Task architecture (FreeRTOS)
-
-Five tasks run statically allocated, priority-based scheduling:
-
-### `imu_task` (priority 3, highest real-time)
-
-- **Rate**: 104 Hz (every 9.6 ms)
-- **Triggered**: SPI1 DMA completion interrupt (LSM6DSO32 burst read)
-- **Logic**:
-  1. Read 6 accel + gyro values from DMA buffer
-  2. Apply calibration (bias subtraction, scale division)
-  3. Feed accel/gyro to Mahony AHRS → quaternion
-  4. Feed IMU to KF predict step
-  5. Apply pending GPS/wheelspeed corrections (from queues)
-  6. Check gate crossings
-  7. Update lap state machine
-  8. Feed the magnetometer sample to the continuous background calibrator (and cross-check heading vs GPS course when moving)
-- **Output**: fused position/velocity to `canbc` state (mutex-guarded)
-- **Stack**: 2 KB
-
-### `gps_task` (priority 2)
-
-- **Rate**: Variable (depends on UBX frame boundaries)
-- **Triggered**: USART3 RX DMA (u-blox UBX protocol)
-- **Logic**:
-  1. Parse UBX frame (header, payload, checksum)
-  2. On NAV-PVT: extract lat/lon/height/velE/velN/velD → queue to `imu_task`
-  3. On TIM-TM2: extract button edge timestamp (GPS time) → Lap_Event CAN message
-  4. Handle boot-time UBX-CFG-VALSET/VALGET responses (configuration state machine)
-- **Output**: GPS fixes and TM2 events queued to `imu_task`
-- **Stack**: 2 KB
-
-### `can_task` (priority 1)
-
-- **Rate**: ~100 Hz (staggered periodic)
-- **Logic**:
-  1. Broadcast periodic messages (Position @ 20 Hz, Attitude @ 50 Hz, etc.)
-  2. Dequeue inbound CAN commands (gate set/clear, mag-cal, config)
-  3. Dispatch commands to `imu_task` or `sys_task` via queues
-- **Output**: CAN frames on FDCAN1
-- **Stack**: 1.5 KB
-
-### `aux_task` (priority 1)
-
-- **Rate**: ~1 Hz (or on-demand)
-- **Logic**: Synthesize NMEA sentences from latest fused state → USART3 TX (→ MAX3232 → MoTeC datalogger, via solder jumper JP6)
-- **Output**: NMEA on RS232 link at 115200 (USART3's TX shares the baud register with the UBX stream on RX)
-- **Stack**: 1.5 KB
-- Note: RTCM corrections never pass through the MCU — the RS232 input is routed straight to the F9P's UART1 RX in hardware (JP7 bridged 2‑3)
-
-### `sys_task` (priority 0, lowest)
-
-- **Rate**: 10 Hz
-- **Logic**:
-  1. Read buttons (lap button, user button) → queue to `imu_task` or trigger actions
-  2. Update LEDs (status, fault indicators)
-  3. Read temperature sensor (MCP9800) → CAN broadcast
-  4. Reset watchdog (IWDG)
-  5. On user request: trigger flash compaction (gate cleanup)
-- **Output**: Button events, LED state, temperature readings
-- **Stack**: 1.5 KB
-
-### Queues and synchronization
-
-- **`app_event_queue`** — Button/command events from `sys_task`/`can_task` to `imu_task`
-- **`gps_nav_queue`** — GPS fixes from `gps_task` to `imu_task`
-- **`canbc` state** — Mutex-guarded FreeRTOS state (fused position/attitude for `can_task` to broadcast)
-- **I2C2 bus mutex** — arbitrates the shared bus between `gps_task`'s boot config (F9P DDC port) and `sys_task`'s MCP9800 temperature reads
-- **DMA completion semaphore** — `imu_task` blocks waiting for SPI DMA, unblocks on completion
-
-All queues are **static allocation** with FIFO overflow handling (oldest message dropped if full).
-
-## Boot sequence
-
-1. **HAL init** — Reset handler, clock tree, peripheral clocks, GPIO
-2. **FreeRTOS init** — Scheduler setup, static tasks created
-3. **Peripheral drivers** — USART, SPI, CAN, I2C, TIM configured
-4. **Task startup**:
-   - `sys_task` — Reads button state, initializes LEDs
-   - `gps_task` — Configures the ZED-F9P via UBX-CFG-VALSET **over I2C** (the board has no MCU→GPS UART path): UART1 baud, UBX-only output, RTCM3X input, 20 Hz rate, constellations, NAV-PVT/TIM-TM2 enables
-   - `imu_task` — Initializes LSM6DSO32, Mahony AHRS, KF state
-   - `can_task` — Initializes CAN transceiver, schedules first broadcast
-   - `aux_task` — Starts NMEA synthesis to the MoTeC (USART3 TX)
-5. **Restore state** — `flash_store_init()` loads gates from flash (deferred)
-6. **Scheduler starts** — `vTaskStartScheduler()` begins task switching
-
-When the first GPS fix arrives:
-- `gps_task` queues a GPS fix to `imu_task`
-- `imu_task` anchors the ENU frame origin at the first position
-- All deferred gates are projected into ENU and armed for crossing detection
-
-## Magnetic calibration
-
-The magnetometer experiences hard-iron (constant bias) and soft-iron (scale imbalance) distortion. Calibration runs **continuously in the background** — no driver action needed:
-
-1. **Feed**: every raw sample flows into a rolling window (`mag_cal_cont_feed` in [`mag_cal.c`](../SUFST/Src/imu/mag_cal.c)), which tracks how much of the heading circle has been swept (12 sectors).
-2. **Finalise**: once a window covers ≥9/12 sectors, it commits a new **horizontal** (x/y) bias/scale — all a heading needs. The vertical axis can't be calibrated from a level car (it sees a constant field), so its terms are carried over from flash. The window then resets, so a magnetic transient taints at most one window (self-healing).
-3. **Validate**: whenever the car is moving above the course-valid speed, the fused heading is cross-checked against GPS course-over-ground. Tight circular agreement (constant offset = declination + mounting) promotes the state to *validated*.
-4. **Quality flag** (`GPS_Mag.cal_status`): 0 uncalibrated → 1 collecting → 2 calibrated → 3 validated. A consumer wanting a trustworthy heading gates on ≥2.
-5. **Persist**: an improved calibration is written to flash (rate-limited to bound wear), and restored at boot as the seed — so heading works immediately, starting at *calibrated*, before re-validating against course.
-
-`CAN_CMD_MAG_CAL_START` remains as a "force a fresh rebuild" override (discard the current cal and re-sweep, e.g. after new hardware is fitted near the sensor); `CAN_CMD_MAG_CAL_STOP` is now a no-op.
-
-The underlying model is the "basic" axis-aligned min/max method, not a full 9-parameter ellipsoid fit. Good enough for a heading; a full ellipsoid fit is a natural upgrade.
-
-## Error handling & robustness
-
-### CRC validation
-
-- UBX frames: checksum validated on every parse
-- Flash records: CRC32 validated on every restore
-- Corrupted records are skipped (logged if debug enabled)
-
-### Watchdog
-
-- IWDG (Independent Watchdog) set to 5 s timeout
-- `sys_task` resets it every 100 ms
-- If the firmware hangs, IWDG fires a hard reset
-
-### Bus errors
-
-- SPI DMA: errors logged; transfer is retried
-- CAN: errors logged; transceiver stays alive (CAN is fail-silent anyway)
-- USART: parity/framing errors logged; next frame is re-synced
-
-### GPS loss of fix
-
-- KF continues predicting from IMU accel
-- Lap timing still works (position estimate is continuous)
-- CAN broadcast flags indicate "no fix" (downstream consumers handle it)
-
-## Performance & optimization
-
-See [DEVELOPER.md](DEVELOPER.md) for CPU load breakdown. Key optimizations:
-
-- **DMA for SPI** — SPI reads yield the CPU instead of spinning
-- **Staggered CAN broadcast** — Not all messages every cycle; spreads load
-- **Ring buffers** — KF history ring, lap history ring; no malloc
-- **Inline math** — Common operations (dot product, quaternion ops) are inlined
-- **Fixed-point optional** — Some paths could use fixed-point; currently all float for precision and simplicity
-
-Flash memory:
-- **Release build**: ~58 KB (45% of 128 KB CB)
-- **Debug build**: ~94 KB (73% of 128 KB CB)
-
-## Testing strategy
-
-### Host-side tests
-
-- **UBX parsing** ([`test_ubx.c`](../tests/test_ubx.c)) — Checksum, frame sync, payload extraction
-- **CAN pack/unpack** ([`test_can_pack.c`](../tests/test_can_pack.c)) — All message types encoded/decoded correctly
-- **Fusion** ([`test_kf6.c`](../tests/test_kf6.c), [`test_ahrs.c`](../tests/test_ahrs.c)) — Kalman filter and AHRS with synthetic data
-- **Lap timing** ([`test_laptimer.c`](../tests/test_laptimer.c)) — Gate crossing detection, sector times, lap state machine
-- **Persistence** ([`test_flash_store.c`](../tests/test_flash_store.c)) — Record write/read, CRC, restore, compaction
-
-All tests are **deterministic** and pass/fail on assertions. No mocking framework; tests exercise real code paths.
-
-### Hardware testing
-
-Not yet performed. Pending items:
-- Gate placement accuracy and reproducibility across power cycles
-- Lap time accuracy under real GPS + IMU conditions (compare to external timing reference)
-- CAN broadcast timing and signal integrity
-- Thermal stability of the fusion filter
-
-## Future enhancements
-
-See [NOTES.md](NOTES.md) for architectural notes and planned improvements.
-
----
-
-**Questions about a specific subsystem?** Check the header file (e.g., `SUFST/Inc/fusion/ahrs.h`) for API docs and usage examples.
+### Gates ([`gates.c`](../SUFST/Src/laptimer/gates.c))
+
+Eight slots: 0 is start/finish, 1–7 are sectors. A gate is a point plus a
+heading; the gate line runs perpendicular to the heading and is
+`LAP_GATE_HALF_WIDTH_M` (2 m) either side of the point.
+
+A gate is placed at the current fused position. Its heading is the direction
+of travel when moving faster than 2 m/s, otherwise the vehicle's AHRS heading
+(so a gate can be set with the car parked, nose down the track — which needs a
+calibrated magnetometer). Setting the start/finish clears every sector gate.
+
+A crossing is a sign change of the signed distance to the line, in the forward
+direction only, inside the half-width. The crossing instant is linearly
+interpolated between the two 104 Hz samples that bracket it.
+
+### Lap state machine ([`laptimer.c`](../SUFST/Src/laptimer/laptimer.c))
+
+- The first start/finish crossing starts lap timing.
+- Each later start/finish crossing completes a lap, provided at least
+  `LAP_MIN_LAP_TIME_MS` (10 s) has passed — closer re-crossings are ignored.
+  Completing a lap also completes its final sector (last sector gate → finish).
+- Each sector gate counts once per lap; crossing order is not enforced.
+- Moving or clearing the start/finish gate resets lap timing and the lap count.
+
+`imu_task` runs this only while time locked and with the frame anchored, and
+never across a discontinuity in the estimate (frame anchoring, time lock, KF
+divergence recovery). Completed laps and sectors go out as `Lap_Event` frames;
+the running state as `Lap_Status`, whose `DEGRADED` flag is set while there is
+no recent fix or no time lock.
+
+### Gate persistence ([`flash_store.c`](../SUFST/Src/persist/flash_store.c))
+
+Gates are stored as **absolute** latitude/longitude (i32, 1e-7°) plus heading,
+because the ENU origin moves every boot. At boot they are loaded into a table;
+when the first fix anchors the frame they are converted to ENU and placed.
+Clears before that act on the table directly, so a restored gate can be removed
+before a fix.
+
+The store is an append-only log of 32-byte CRC-protected records in the top
+two 2 KB flash pages:
+
+- Every gate set, gate clear and clear-all appends a record; the latest record
+  per slot wins on restore. The magnetometer calibration is stored the same way.
+- **Compaction** rewrites only the current state into the spare page, then
+  writes a completion marker carrying a generation number, and only then erases
+  the old page. At boot, if a reset left both pages in use, the page with the
+  newer completion marker wins (a marker-less page is a partial rewrite), so an
+  interruption at any point leaves one complete copy.
+- Compaction erases flash, stalling the CPU for tens of milliseconds, so it only
+  runs at boot (if fewer than 32 slots are free) or, when requested by
+  `CONFIG_SAVE` or a full page, while the car is stationary. A record that found
+  the page full is not lost: the whole current state is re-saved after the
+  compaction.
+
+Only `imu_task` touches the store.
+
+## Magnetometer calibration ([`mag_cal.c`](../SUFST/Src/imu/mag_cal.c))
+
+Runs continuously; no driver action needed.
+
+1. Every raw sample feeds a window that tracks how much of the heading circle
+   (12 sectors) it has covered.
+2. When a window has 200 samples across ≥ 9 sectors it commits a new
+   horizontal hard-iron offset and soft-iron scale (the vertical axis can't be
+   learned from a level car and keeps its stored value), then starts again — so
+   a magnetic disturbance taints at most one window.
+3. While GPS is aiding and the car is moving, the AHRS heading is compared with
+   GPS course; consistent agreement promotes the calibration to *validated*.
+4. Improved calibrations are saved to flash at most once a minute and seed the
+   next boot.
+
+`GPS_Mag.cal_status`: 0 uncalibrated, 1 collecting, 2 calibrated, 3 validated.
+`CAN_CMD_MAG_CAL_START` discards the calibration and re-learns it.
+
+## GPS link ([`gps_task.c`](../SUFST/Src/gps/gps_task.c), [`gps_config.c`](../SUFST/Src/gps/gps_config.c))
+
+- **Configuration** goes over I2C (the board has no MCU→GPS UART path): probe
+  until the receiver answers (it NACKs for ~1 s after power-up), then one
+  CFG-VALSET to the RAM layer (115200 baud UBX on UART1, RTCM3 input, 20 Hz,
+  automotive model, GPS + Galileo, NAV-PVT and TIM-TM2), confirmed by reading the
+  baud rate back.
+- **Reception**: USART3 RX in circular DMA with idle-line events; a byte-wise
+  UBX parser, so frames may straddle the ring wrap. UART errors re-arm reception.
+- **Supervision**: NAV-PVT arrives every 50 ms with or without a fix. If none
+  arrives for 2 s the GPS fault flag is set, and every 5 s the configuration is
+  re-sent and reception restarted — covering a receiver that reset itself (it
+  comes back at 38400 baud talking NMEA).
+- Every NAV-PVT is forwarded, fix or not; consumers check `gnssFixOK`
+  themselves, and anything older than 1 s is treated as lost.
+
+## CAN ([`canbc_task.c`](../SUFST/Src/canbus/canbc_task.c))
+
+A 10 ms slot loop walks a staggered rota (each message has a period and phase in
+slots, so rates from 100 Hz down to 1 Hz don't pile into the same slot). The
+3-deep hardware TX FIFO is allowed a few milliseconds to drain before a frame is
+dropped; if the loop overruns (nothing on the bus to acknowledge), the backlog
+is discarded rather than replayed. Bus-off is cleared once a second.
+
+Received frames: `GPS_Command` (dispatched to the owning task's queue) and the
+VCU's `Wheel_Speeds` (front-left wheel only).
+
+## Health and fault handling
+
+| Fault | Detection | Response |
+|-------|-----------|----------|
+| Task hang / boot hang | IWDG, ~1.25 s, refreshed only by the lowest-priority task | Reset |
+| Stack overflow | FreeRTOS check (method 2) | Immediate reset |
+| GPS link lost | No NAV-PVT for 2 s | Fault flag, periodic re-configure |
+| Loss of fix | `gnssFixOK` clear, or no fix for 1 s | GPS-aided / degraded flags; KF dead-reckons |
+| IMU read failures | 10 consecutive failed reads, or config read-back mismatch (1 Hz) | Fault flag, GPS-only mode, re-init attempt every second |
+| Magnetometer silent | No new sample for 1 s | Fault flag; AHRS continues without it |
+| CAN bus-off | Protocol status, 1 Hz | Leave INIT mode to rejoin |
+| Flash page full | Append returns full | Compact when stationary, then re-save |
+
+## Testing
+
+Host-side unit tests (no hardware needed) cover the UBX parser, CAN packing,
+AHRS, KF (including delayed correction, outlier rejection and divergence
+recovery), geodesy, gates, lap timer, magnetometer calibration, NMEA formatting,
+time base and the flash store's record, restore and page-selection logic. The
+FreeRTOS tasks and hardware drivers are not covered and have not yet been run on
+the board.

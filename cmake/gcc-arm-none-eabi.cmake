@@ -31,9 +31,14 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${TARGET_FLAGS}")
 set(CMAKE_ASM_FLAGS "${CMAKE_C_FLAGS} -x assembler-with-cpp -MMD -MP")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fdata-sections -ffunction-sections")
 
-# Keep every float literal and libm call single-precision: double promotion is
-# both a flash-size and a deadline hazard on the M4F (soft double).
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsingle-precision-constant -Wdouble-promotion")
+# Double is software-emulated on the M4F (single-precision FPU), so an
+# accidental float -> double promotion is both a flash-size and a deadline
+# hazard: -Wdouble-promotion flags every one (e.g. a float literal missing
+# its `f` suffix). Deliberately NOT -fsingle-precision-constant: that
+# silently turns the few literals that must be double (the 1e-7 deg
+# lat/lon scaling) into floats on target only, so the firmware would
+# compute differently from the host unit tests that are meant to cover it.
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdouble-promotion")
 
 # nano.specs' reduced libc doesn't provide the reentrant errno plumbing the
 # default errno-setting libm wrappers (w_sqrt, wf_asin, ...) need, which

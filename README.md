@@ -6,7 +6,7 @@ The SUFST STAG 12 GPS node is a **standalone sensor module** that transforms raw
 
 | Feature | Spec |
 |---------|------|
-| **Timing accuracy** | ~1 ms (fused 104 Hz state with GPS-time stamping) |
+| **Timing resolution** | ~1 ms (crossings interpolated in the fused 104 Hz state, stamped in GPS time) |
 | **Lap detection** | Automatic gate crossing, steering-wheel programmable (short/long/very-long press) |
 | **Gate persistence** | Stored as absolute lat/lon, reproducible after power-cycle-and-move |
 | **Broadcast** | 20 Hz position/velocity, 50 Hz attitude, 100 Hz IMU, ~5 Hz gates, 1 Hz GPS/UTC time, CAN 1 Mbps |
@@ -35,17 +35,17 @@ The SUFST STAG 12 GPS node is a **standalone sensor module** that transforms raw
 
 ## Hardware
 
-The GPS mainboard (`pcb/gps-mainboard`) is a 2-layer, 65 mm × 85 mm board that:
-- Talks to the car via 1× CAN-S (1 Mbps sensor bus), 1× RS232 (NMEA out to the MoTeC datalogger, RTCM corrections in for RTK), 1× steering-wheel button
+The GPS mainboard ([schematic](gps-mainboard.pdf)) is a 4-layer board that:
+- Talks to the car via CAN-S (1 Mbps sensor bus), RS232 (NMEA out to the MoTeC datalogger, RTCM corrections in for RTK) and the steering-wheel lap button
 - Synchronises to GPS time via a 1 PPS input from the ZED-F9P
 - Runs 104 Hz IMU samples through a real-time fusion pipeline
 - Persists gate configuration in the STM32's internal flash
 
-See [**DATASHEET.md**](docs/DATASHEET.md) for schematics, layout, pinouts, and electrical specs.
+See [**DATASHEET.md**](docs/DATASHEET.md) for pinouts, interfaces and the CAN matrix.
 
 ## Status
 
-**Production-ready firmware.** Every module builds and links correctly; all unit tests pass. The system has been validated in simulation (realistic car dynamics, synthetic tracks) and field-tested for timing accuracy, lap detection, and gate persistence. Ready for track deployment in STAG 12.
+**v1.0.0 — release candidate, not yet validated on hardware.** The firmware builds warning-free (Release and Debug) and all host unit tests pass, but it has not yet been run on the board: sensor bring-up, timing accuracy and gate persistence still need confirming on the bench and on track. See [CHANGELOG.md](CHANGELOG.md) for what changed and what is still open — and the bring-up checklist in [DEVELOPER.md](docs/DEVELOPER.md#bring-up-checklist) for first power-on.
 
 ## Building
 
@@ -56,14 +56,14 @@ Requires `arm-none-eabi` toolchain (GCC 13.x+ recommended):
 ```bash
 cmake --preset Release
 cmake --build --preset Release
-# Output: build/gps_firmware.elf, ~58 KB
+# Output: build/Release/gps-firmware.{elf,hex,bin}, ~66 KB of 124 KB
 ```
 
 Debug build (with `-O0`):
 ```bash
 cmake --preset Debug
 cmake --build --preset Debug
-# Output: ~94 KB (still fits in 128 KB CB variant)
+# Output: build/Debug/, ~110 KB (still fits)
 ```
 
 ### Unit tests (host machine)
@@ -71,9 +71,9 @@ cmake --build --preset Debug
 Runs on native compiler (no ARM toolchain needed):
 
 ```bash
-cmake -B build-host -DGPS_HOST_TESTS=ON -G Ninja
-cmake --build build-host
-ctest --test-dir build-host
+cmake --preset Test
+cmake --build --preset Test
+ctest --preset Test
 # 11/11 tests: UBX parsing, CAN pack/unpack, fusion, timing, persistence
 ```
 
@@ -81,8 +81,8 @@ ctest --test-dir build-host
 
 ```bash
 cd tools/dashboard
-pip install -e .
-gps-dashboard
+uv sync
+uv run gps-dashboard
 ```
 
 ## Contributing
@@ -91,6 +91,6 @@ Contributions follow SUFST style: read [DEVELOPER.md](docs/DEVELOPER.md) for nam
 
 ---
 
-**Questions?** Check [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the big picture, [DEVELOPER.md](docs/DEVELOPER.md) for build/test details, or grep the codebase—comments are sparse by design (signal-to-noise, not mystique).
+**Questions?** Check [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the big picture and [DEVELOPER.md](docs/DEVELOPER.md) for build/test details; the source comments explain the reasoning behind most decisions.
 
-*Last updated: 2026-07-05. SUFST STAG 12 GPS Node Firmware.*
+*SUFST STAG 12 GPS Node Firmware v1.0.0.*

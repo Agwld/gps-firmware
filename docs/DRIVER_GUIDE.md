@@ -1,141 +1,125 @@
 # Driver's Guide — STAG 12 GPS Timing System
 
-This guide covers how to set up and use the lap timing system during testing and competition.
+How to set up and use the lap timing system during testing and competition.
 
 ## Overview
 
-The GPS node automatically measures lap times and segment (sector) times by detecting when you cross invisible gates on the track. Gates are placed using the **steering wheel button** and persist across power cycles—once you set them, they stay set even if the car is turned off and moved.
+The GPS node measures lap and sector times by detecting when the car crosses
+invisible gates on the track. You place the gates with the **steering-wheel
+lap button**. They are saved immediately and survive power cycles — once set,
+they stay set even if the car is switched off and moved.
 
-**Placing** a gate works whether you're parked or rolling (see *Placing gates while stationary* below). **Crossing** a gate to trigger timing naturally requires driving through it at speed—if you're parked or crawling, nothing will trigger during a lap.
+**Placing** a gate works parked or rolling (see *Placing gates while
+stationary*). **Crossing** a gate only counts when you drive through it
+forwards, in the direction it was set.
 
-## Setting up gates
+## Getting started
 
-### Starting the system
+1. **Power on** — the node boots with the car.
+2. **Wait for a GPS fix** — usually under a minute with a clear sky. The
+   board's user LED comes on, and the dash shows a fix, once the node has
+   both a fix and a working IMU.
+3. **Gates you set last time reappear** as soon as the first fix arrives.
 
-1. **Power on** the GPS node (it boots with the car)
-2. **Wait for the first GPS fix** (30 seconds typical, faster if stationary near startup)
-   - The dashboard shows "FIX: OK" when ready
-   - Gates won't place until you have a fix
-3. **The node is now live** and tracking your position in real time
+Gates can't be placed until there is a fix — a press before then is ignored.
 
-### Creating gates: the button FSM
+## The lap button
 
-The steering wheel lap button supports three actions based on press duration:
+| Press | Hold time | Action |
+|-------|-----------|--------|
+| **Short** | under 1 s | Place a **sector** gate here — it fills the next free sector slot (up to 7) |
+| **Long** | 1–5 s | Place the **start/finish** line here. This **removes all sector gates** and resets the lap count |
+| **Very long** | over 5 s | **Clear all gates** |
 
-| Press | Duration | Action | Effect |
-|-------|----------|--------|--------|
-| **Short** | Release after <1 s | Set sector gate | Place the next segment gate at your current position |
-| **Long** | Hold 1–5 s | Set start/finish | Place the start/finish line, **clears all sector gates** |
-| **Very long** | Hold >5 s | Clear all gates | Wipes everything (start/finish + all sectors) |
+The action happens when you let go.
 
-**Example setup:**
-1. Position the car at the start/finish point → **long press** (1–5 s) → gates are cleared; S/F is now set at this position
-2. Drive to the first sector → **short press** → gate 1 is placed
-3. Drive to the second sector → **short press** → gate 2 is placed
-4. And so on (up to 7 sector gates per start/finish)
+**Typical setup:**
+1. At the start/finish line → **long press**.
+2. At each sector point, in order → **short press**.
 
-**The dashboard shows "Next sector: N"** to tell you which gate number will be placed on the next short press.
+Once all 7 sector slots are full, a further short press moves the last one.
 
 ### Placing gates while stationary
 
-A gate is a line drawn *across* your direction of travel. When you're moving, the node uses your actual direction of travel to orient it. When you're parked or crawling, it uses the **compass heading** instead—so you can set the start/finish line with the car stopped, as long as the **nose is pointed straight down the track** (the gate is drawn square to wherever the nose points).
+A gate is a line across the track, square to the car's direction. When you're
+moving faster than walking pace the node uses your actual direction of travel.
+When parked or crawling it uses the **compass heading** instead — so point the
+**nose straight down the track** before pressing.
 
-For this to be accurate the compass must be calibrated:
+That only works once the compass is calibrated:
 
-- **It calibrates itself automatically** as you drive—no button sequence or special manoeuvre. Just drive a lap or two.
-- The dashboard's magnetometer status climbs **Uncalibrated → Collecting → Calibrated → Validated** as it learns. Once it reads **Calibrated** (ideally **Validated**, which means the compass now agrees with your GPS direction of travel), stationary placement is trustworthy.
-- The calibration is saved and reloaded on next power-up, so after the first good session it starts ready.
+- It **calibrates itself** as you drive — no special manoeuvre, just a lap or
+  two with plenty of different headings.
+- The dash's magnetometer status goes **Uncalibrated → Collecting → Calibrated
+  → Validated**. From **Calibrated** on, stationary placement is usable;
+  **Validated** means it also agrees with the GPS direction of travel.
+- The calibration is saved, so after the first good session it starts ready.
 
-**Rule of thumb:** on a fresh car, drive a lap before placing gates from a standstill. If in doubt, place gates while rolling—that never needs the compass.
+**If in doubt, place gates while rolling** — that never needs the compass.
 
-### Clearing gates
+## Timing
 
-- **Clear everything immediately**: very long press (>5 s) on the button
-- **Clear one sector**: press the CAN command via the dashboard (if available)
-- **Clear and re-set start/finish**: long press (1–5 s) on the button (this also wipes all sectors)
+- The **first** time you cross start/finish, the lap clock starts.
+- Every later crossing completes a lap and starts the next — but crossings less
+  than **10 s** apart are ignored, so creeping over the line doesn't log a lap.
+- Each sector gate gives a sector time (since the previous gate); the stretch
+  from the last sector gate to the finish is the final sector.
+- Each sector gate counts once per lap.
+- Moving or clearing the start/finish line resets timing — the next crossing
+  starts lap 1 again.
 
-### Timing during a lap
+Times are measured in GPS time from the node's 104 Hz position estimate.
 
-Once gates are set:
-- **On first crossing of start/finish**, the system starts a lap timer
-- **Each sector gate crossing** records the segment time (the time since the previous gate)
-- **Lap times are continuously updated** as you drive
-- **The dashboard broadcasts times in real time** (20 Hz) to the in-car display
+### When timing pauses
 
-**Lap times include fractional seconds** (down to ~1 ms resolution due to the fused 104 Hz state) and are stamped in GPS time, so they're comparable across sessions and synchronized to external data loggers.
+The lap status is flagged **DEGRADED** when the node has had no GPS fix for a
+second or isn't yet locked to GPS time. Laps are not started or completed
+until GPS time is locked (normally within seconds of the first fix), and
+while the fix is lost the position is estimated from the IMU, so crossings
+are less accurate. Times from a lap that spent a long stretch without a fix
+should not be trusted.
 
-## Daily pre-event checklist
+## Pre-event checklist
 
-- [ ] GPS node has power (indicator LED is on)
-- [ ] Dashboard can connect to the car's CAN bus
-- [ ] Dashboard shows a green "FIX" indicator (GPS is locked)
-- [ ] Set gates using the button (or dashboard, if available)
-- [ ] Do a test lap—check that sector times are displayed
-- [ ] Check that lap time appears on the in-car dash when you cross start/finish the second time
+- [ ] Node powered, user LED on once the car is outside
+- [ ] Dash receiving GPS data, fix shown
+- [ ] Lap status **Armed** (start/finish placed) and not DEGRADED
+- [ ] Gates where you expect them on the dash map
+- [ ] Test lap: sector times appear, lap time appears on the second start/finish crossing
 
 ## Troubleshooting
 
-### "FIX: not ready" on the dashboard
+### No fix
 
-**Cause**: The GPS receiver hasn't locked onto satellites yet.
-
-**Fix**: 
-- Wait 30–60 seconds (longer if you just powered on)
-- Make sure the car is in an open area (not under cover)
-- Check that the antenna has a clear view of the sky
-- Try moving the car a few metres to a different location
+- Get out from under cover; the antenna needs open sky.
+- Allow a minute after power-on.
+- If the board's error LED is on, the node itself has a fault — tell the
+  electronics team (the dash's GPS_Status shows which).
 
 ### Gates won't place
 
-**Cause**: The GPS node is waiting for a fix, or you're parked/stationary.
+- There is no fix yet — wait for one and press again.
+- Parked with the compass still **Uncalibrated**: the gate *is* placed, but
+  may point the wrong way. Drive a lap first, or place it while rolling.
 
-**Fix**:
-- Confirm the dashboard shows "FIX: OK"
-- Move the car at a walking pace or faster
-- Press the button again once moving
+### Laps don't count
 
-### Lap times don't update
+- Lap status shows **DEGRADED** — wait for the fix / time lock.
+- You crossed the line backwards or outside it: gates are 4 m wide (2 m either
+  side of where you pressed). Drive straight through near the press point.
+- The previous crossing was less than 10 s ago.
 
-**Cause**: The CAN bus connection is loose, or the node hasn't detected a crossing yet.
+### Gates disappeared
 
-**Fix**:
-- Check the CAN connector on the GPS node
-- Verify the dashboard shows incoming position/attitude data (not red)
-- Drive through a gate faster and more deliberately (gates are ~4 m wide; the car must cross the line cleanly)
+- A long press (start/finish) also removes all sector gates; a very long press
+  removes everything. Clears are saved immediately — a power cycle does not
+  bring them back. Re-place them.
 
-### Gates "disappeared" (cleared when I didn't intend it)
+### Erratic times
 
-**Cause**: You accidentally long-pressed the button (the "set start/finish" action).
-
-**Fix**: 
-- Re-set the gates (short press for sectors, long press for start/finish)
-- The gates are stored in flash, so they'll come back after a power cycle if you re-power before manually clearing them
-
-### Erratic lap times or timing jumps
-
-**Cause**: Poor GPS signal, or the fusion filter is still settling.
-
-**Fix**:
-- Make sure the antenna has a clear view of the sky
-- Wait a full lap after setting gates before trusting the times (the filter needs time to converge)
-- If indoors or under heavy foliage, GPS will be unreliable
-
-## On the track
-
-1. **Establish gates** before the first timed run (practice laps)
-2. **Monitor the in-car dash** for real-time sector and lap times
-3. **Lap times update automatically**—no manual control needed once gates are set
-4. **If you need to re-set gates**, long-press the button and re-do the setup
-
-## Technical note: how timing works
-
-The node:
-- Runs a **sensor fusion filter** at 104 Hz that blends GPS position (20 Hz) with IMU acceleration to produce a smooth, fast position estimate
-- Checks for gate crossings every 1/104 s with linear interpolation for sub-sample timing resolution
-- Stamps each crossing time in **GPS time-of-week** (synchronized to the ZED-F9P's PPS clock) so times are repeatable and comparable to external data
-
-Result: timing is accurate to ~1 ms and unaffected by GPS latency or dropouts.
+- Poor sky view (trees, buildings) degrades the GPS.
+- Right after power-on the estimate is still settling — give it a lap.
 
 ---
 
-**Have questions?** Check the [README](../README.md) or ask the team.
+Questions? See the [README](../README.md) or ask the electronics team.

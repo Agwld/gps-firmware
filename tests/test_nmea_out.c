@@ -32,8 +32,10 @@ static int g_failures = 0;
 #define CHECK_SIZE_EQ(desc, actual, expected)                                \
     do {                                                                     \
         if ((size_t)(actual) != (size_t)(expected)) {                        \
-            printf("FAIL %s\n  expected len: %zu\n  actual len:   %zu\n",     \
-                   (desc), (size_t)(expected), (size_t)(actual));            \
+            /* %lu + cast, not %zu: older MinGW runtimes reject %zu. */      \
+            printf("FAIL %s\n  expected len: %lu\n  actual len:   %lu\n",     \
+                   (desc), (unsigned long)(expected),                        \
+                   (unsigned long)(actual));                                 \
             g_failures++;                                                    \
         } else {                                                             \
             printf("PASS %s\n", (desc));                                     \

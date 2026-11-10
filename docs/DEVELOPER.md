@@ -1,450 +1,220 @@
 # Developer Guide
 
-Comprehensive guide to building, testing, debugging, and contributing to the GPS firmware.
+Building, testing, flashing and changing the GPS firmware.
 
 ## Development environment
 
 ### Required tools
 
-| Tool | Min version | Purpose |
-|------|-------------|---------|
-| GCC ARM | 13.x | STM32G431 cross-compiler |
-| CMake | 3.27 | Build system |
-| Ninja | 1.12 | Fast parallel build |
-| Git | 2.30 | Version control |
-| Python | 3.12 | Dashboard, test scripts |
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Arm GNU toolchain (`arm-none-eabi-gcc`) | 13.x (13.3 used for v1.0.0) | Cross-compiler |
+| CMake | ≥ 3.22 | Build system (uses presets) |
+| Ninja | any recent | Generator used by the presets |
+| A host C compiler (GCC/MinGW or Clang) | any C11 | Host unit tests |
 
-### Optional tools
+Optional: STM32CubeProgrammer or `st-flash` (flashing), OpenOCD + `arm-none-eabi-gdb` (debugging), `clang-format` (config in `.clang-format`), [uv](https://docs.astral.sh/uv/) (the dashboard, see [its README](../tools/dashboard/README.md)).
 
-| Tool | Purpose |
-|------|---------|
-| STM32CubeProgrammer | Flash & debug (GUI) |
-| OpenOCD | JTAG debug server |
-| arm-none-eabi-gdb | GDB debugger for ARM |
-| clang-format | Code formatting (config: `.clang-format`) |
-| black | Python formatter (dashboard) |
+### Toolchain on PATH
 
-### Setup (Ubuntu/Debian)
+The presets expect `arm-none-eabi-gcc` on `PATH`.
 
-```bash
-# Install cross-compiler
-sudo apt-get update
-sudo apt-get install gcc-arm-none-eabi binutils-arm-none-eabi \
-  gdb-arm-none-eabi build-essential cmake ninja-build
-
-# Install STM32 tools
-sudo apt-get install stlink-tools openocd
-
-# Install Python 3.12 (if needed)
-sudo apt-get install python3.12 python3.12-venv
-python3.12 -m venv venv
-source venv/bin/activate
-
-# Install Python dependencies (for dashboard, scripts)
-pip install cantools pyqt6 pyqtgraph python-can pytest
-```
-
-### Setup (macOS)
-
-```bash
-# Install toolchain via Homebrew
-brew install arm-none-eabi-gcc cmake ninja python@3.12 stlink openocd
-
-# Create Python venv
-python3.12 -m venv venv
-source venv/bin/activate
-pip install -r tools/dashboard/requirements.txt
-```
+- **Linux**: `sudo apt-get install gcc-arm-none-eabi cmake ninja-build`
+- **macOS**: `brew install --cask gcc-arm-embedded && brew install cmake ninja`
+- **Windows**: install the Arm GNU toolchain, or reuse the one bundled with STM32CubeIDE — add its `…/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.<version>/tools/bin` directory to `PATH`.
 
 ## Building
 
-### CMake presets
-
-The build system uses CMake presets for easy configuration. Available presets:
-
 ```bash
-cmake --list-presets
-```
+cmake --list-presets          # Debug, Release, Test
 
-#### Release build (optimized, ~58 KB)
-
-```bash
 cmake --preset Release
 cmake --build --preset Release
-# Output: build/gps_firmware.elf
 ```
 
-#### Debug build (symbols, -O0, ~94 KB)
+Outputs land in `build/<Preset>/`:
+
+```
+build/Release/
+├── gps-firmware.elf   # ELF (for the debugger)
+├── gps-firmware.hex   # Intel HEX
+├── gps-firmware.bin   # Raw image, flashed at 0x08000000
+└── gps-firmware.map   # Linker map
+```
+
+The build prints the memory use at the end. v1.0.0: Release 65.6 KB / 124 KB
+flash, Debug 109.9 KB — Debug is the one that will run out first.
+
+### Configuration
+
+There are no build-time options beyond the build type, except
+`-DCAN_BITRATE_500K` for a 500 kbit/s bus. Everything else is a constant in
+[`SUFST/Inc/board/board_config.h`](../SUFST/Inc/board/board_config.h): GPS rate,
+gate width, button timings, minimum lap time, NMEA rate, wheel-speed aiding
+(`KF_WHEELSPEED_AIDING`, off), fix staleness, and the IMU/magnetometer mounting
+matrices. The flash layout is fixed to the STM32G431CB.
+
+### Version
+
+The firmware version is `project(... VERSION x.y.z)` in `CMakeLists.txt`. It
+is compiled into the image as `SUFST gps-firmware vx.y.z`:
 
 ```bash
-cmake --preset Debug
-cmake --build --preset Debug
+strings build/Release/gps-firmware.bin | grep gps-firmware
 ```
 
-#### Host tests (native machine)
-
-```bash
-cmake -B build-host -DGPS_HOST_TESTS=ON -G Ninja
-cmake --build build-host
-ctest --test-dir build-host -V
-```
-
-### Custom build options
-
-The board requires the **STM32G431CB** (128 KB flash); the linker script and flash layout are fixed to that part.
-
-To set the GPS update rate (default 20 Hz):
-
-```bash
-cmake --preset Release -DGPS_NAV_RATE=25
-# Note: 25 Hz is supported; >25 Hz requires harsher constellation cuts
-```
-
-### Build outputs
-
-```
-build/
-├── gps_firmware.elf          # ELF binary (full debug symbols)
-├── gps_firmware.bin          # Raw binary for flashing
-├── gps_firmware.hex          # Intel HEX format
-└── CMakeFiles/               # CMake intermediates
-```
-
-### Binary size analysis
-
-Check the firmware size breakdown:
-
-```bash
-# Total size (text + data)
-arm-none-eabi-size -A build/gps_firmware.elf
-
-# Detailed section breakdown
-arm-none-eabi-objdump -h build/gps_firmware.elf
-
-# Symbol sizes (to find bloat)
-arm-none-eabi-nm -S --size-sort build/gps_firmware.elf | tail -20
-```
-
-Current firmware (STM32G431CB, 128 KB flash):
-- **Release**: ~58 KB text + data (45% of 128 KB)
-- **Debug**: ~94 KB (73% of 128 KB)
+To release: bump the version, add a [CHANGELOG.md](../CHANGELOG.md) entry,
+rebuild both presets and run the tests.
 
 ## Testing
 
-### Unit tests (host-side)
-
-All testable code (fusion, protocols, persistence) runs on the native machine with no hardware dependencies:
+### Host unit tests
 
 ```bash
-cmake -B build-host -DGPS_HOST_TESTS=ON -G Ninja
-cmake --build build-host
-ctest --test-dir build-host -V   # Run all tests with verbose output
-ctest --test-dir build-host -R <pattern>  # Run tests matching pattern
+cmake --preset Test
+cmake --build --preset Test
+ctest --preset Test
 ```
 
-Current test coverage (11 tests):
+Each `tests/test_<module>.c` is its own executable, discovered automatically.
+Its firmware sources are listed in `tests/test_<module>.deps`, one per line,
+relative to `SUFST/Src` (e.g. `laptimer/laptimer.c`). Tests are plain C: they
+print failures and return non-zero, no framework.
 
-| Module | Tests | Notes |
-|--------|-------|-------|
-| `ubx.c` | 3 | UBX protocol parsing, frame sync, checksum validation |
-| `can_pack.c` | 2 | CAN message encode/decode (position, velocity, attitude, etc.) |
-| `kf6.c` | 2 | Kalman filter predict/correct, delayed-state rewind |
-| `ahrs.c` | 1 | AHRS quaternion update |
-| `laptimer.c` | 1 | Gate crossing detection, lap timing logic |
-| `flash_store.c` | 1 | Gate/mag-cal persistence, CRC validation, restore |
-| `timebase.c` | 1 | GPS time ↔ tick mapping, iTOW inversion |
+| Test | Covers |
+|------|--------|
+| `test_ubx` | UBX parser (sync, checksum, truncation), frame builder, decoders |
+| `test_can_pack` | Pack/unpack of every CAN message, scaling and saturation |
+| `test_ahrs` | Mahony AHRS convergence and conventions |
+| `test_kf6` | KF predict/correct, delayed correction, outlier rejection, divergence recovery, speed aiding |
+| `test_geodesy` | ENU ↔ lat/lon |
+| `test_timebase` | PPS-disciplined tick ↔ iTOW mapping, week rollover |
+| `test_gates` | Crossing detection, direction, half-width |
+| `test_laptimer` | Lap/sector times on synthetic laps, events, once-per-lap sectors, resets |
+| `test_mag_cal` | Batch and continuous magnetometer calibration |
+| `test_nmea_out` | GGA/RMC/VTG formatting against hand-computed sentences |
+| `test_flash_store` | Records, CRC, restore order, clear-all, A/B page selection after an interrupted compaction |
 
-### Adding a new unit test
+Not covered by tests: the FreeRTOS tasks and anything touching hardware.
 
-1. Create `tests/test_<module>.c`:
-   ```c
-   #include <assert.h>
-   #include "<module>.h"
-   
-   static void test_feature() {
-       // Arrange
-       int result = function_under_test();
-       
-       // Assert
-       assert(result == expected_value);
-   }
-   
-   int main() {
-       test_feature();
-       return 0;  // 0 = pass, non-zero = fail
-   }
-   ```
+### Dashboard tests
 
-2. Create `tests/test_<module>.deps` listing source files to compile:
-   ```
-   SUFST/Src/<module>.c
-   ```
+```bash
+cd tools/dashboard
+uv run pytest
+```
 
-3. Rebuild and run:
-   ```bash
-   cmake --build build-host
-   ctest --test-dir build-host -V
-   ```
+## Flashing
 
-### Hardware testing
+```bash
+# STM32CubeProgrammer CLI
+STM32_Programmer_CLI -c port=SWD -w build/Release/gps-firmware.hex -v -rst
 
-For testing on real hardware:
+# or stlink-tools (raw binary needs the address)
+st-flash write build/Release/gps-firmware.bin 0x08000000
+```
 
-1. **Program the board**:
-   ```bash
-   st-flash write build/gps_firmware.elf 0x08000000
-   ```
+Flashing does not touch the gate store (the top 4 KB) unless you mass-erase.
+A full chip erase clears saved gates and the magnetometer calibration.
 
-2. **Open a serial terminal** to the debug UART (USART1, 115200 baud):
-   ```bash
-   picocom /dev/ttyUSB0 -b 115200  # Linux
-   screen /dev/tty.usbserial 115200  # macOS
-   ```
+## Bring-up checklist
 
-3. **Monitor CAN traffic**:
-   ```bash
-   candump can0  # if the CAN interface is already up
-   # Or use the dashboard tool (see below)
-   ```
+After flashing a board for the first time:
 
-4. **Check GPS status**:
-   - Look for UBX-NAV-PVT messages on the debug UART
-   - Watch the in-car display for "FIX: OK"
+1. **LEDs** — the error LED (PA10) should stay off (it lights on any GPS/IMU/mag fault flag; the GPS one can take ~5 s to appear if the receiver never answers); the user LED (PB15) comes on once there is a GPS fix and the IMU is running.
+2. **CAN** — connect the dashboard or `candump`; `GPS_Status` (0x6B9) at 1 Hz with uptime counting. `fault_bits` should show IMU ready + mag ready, and no faults.
+3. **IMU** — `GPS_IMU_Accel` z ≈ +1000 mg with the board flat. `GPS_Attitude.fusion_status` bit0 set. If the loop is running off its fallback timer instead of the data-ready interrupt, attitude still updates but at ~50 Hz — check with a logic analyser on PC15 (expect 104 Hz).
+4. **GPS** — `GPS_Time` flags go valid, then `fault_bits` bit3 (time locked), bit0 (fix) and bit4 (origin set). `gps_retry_count` should stay at 0 on a healthy link.
+5. **Temperatures** — `GPS_Temp`: three plausible values.
+6. **Gates** — place one with the lap button, power-cycle, confirm it reappears after the first fix (`GPS_Gate`, valid flag).
 
 ## Debugging
 
-### On-target GDB debugging
-
-If you have an ST-LINK or similar:
+### GDB
 
 ```bash
-# Terminal 1: Start OpenOCD server
 openocd -f interface/stlink.cfg -f target/stm32g4x.cfg
-
-# Terminal 2: GDB client
-arm-none-eabi-gdb build/gps_firmware.elf
-(gdb) target remote localhost:3333
+arm-none-eabi-gdb build/Debug/gps-firmware.elf
+(gdb) target extended-remote :3333
 (gdb) load
-(gdb) break imu_task
+(gdb) monitor reset halt
 (gdb) continue
-(gdb) step
 ```
 
-### Logging and assertions
+Note the watchdog (~1.25 s) keeps running while halted unless frozen:
+`(gdb) monitor mww 0xE0042008 0x00001000` sets `DBGMCU_APB1FZR1.DBG_IWDG_STOP`.
 
-The firmware uses `assert()` liberally in host tests. On target, assertions are stripped (compile-time `NDEBUG`). For runtime debugging on hardware, add debug output to the USART1 debug port:
+### Useful places to look
 
-```c
-// In sys_task.c or similar
-void debug_log(const char *fmt, ...) {
-    // Use HAL_UART_Transmit() to USART1
-}
-```
+- `app_get_events()` — the `SYS_EVT_*` ready/fault bits (also on CAN).
+- `uxTaskGetStackHighWaterMark()` per task — check headroom on hardware.
+- A reset loop with no fault LED is usually the watchdog or a stack overflow
+  (`vApplicationStackOverflowHook` resets immediately).
+- The fault handlers (`HardFault_Handler` etc.) spin, and the watchdog then resets.
 
-### CAN message inspection
+USART1 (PB6/PB7, 115200) is initialised but nothing is printed on it by default.
 
-Use `candump` or the dashboard:
+### CAN inspection
 
 ```bash
-# Raw CAN traffic
-candump can0 -a  # absolute timestamps
-
-# Python script to decode messages
-python3 -c "
-import cantools
-db = cantools.database.load_file('tools/GPS.dbc')
-msg = db.get_message_by_name('GPS_Position')
-print(msg)
-"
+candump -ta can0
+python -c "import cantools; db = cantools.database.load_file('tools/GPS.dbc'); print(db.get_message_by_name('GPS_Status'))"
 ```
+
+The dashboard decodes everything live.
 
 ## Code style & conventions
 
-### C code (firmware)
-
-- **Naming**: snake_case for functions/variables, UPPER_CASE for macros, lowercase for typedefs
-- **Pointers**: `int *p;` (pointer on right), not `int* p;`
-- **Indentation**: 4 spaces (enforced by `.clang-format`)
-- **Line length**: 80 columns preferred, 100 max
-- **Comments**: Minimal (signal-to-noise). Only explain *why*, not *what*.
-  ```c
-  // Bad: "increment i"
-  i++;
-  
-  // Good: "history wraps at LAP_HISTORY_SIZE (ring buffer)"
-  i = (i + 1) % LAP_HISTORY_SIZE;
-  ```
-
-### Python code (dashboard, scripts)
-
-- **Style**: black formatter (line length 100)
-- **Type hints**: Encouraged (Python 3.12+)
-- **Naming**: snake_case for functions/variables, PascalCase for classes
+- C11, 4-space indent, `.clang-format` in the root.
+- snake_case, `UPPER_CASE` macros, `module_function()` prefixes, `s_` for file statics, `g_` for globals, `k_` for constant tables.
+- No heap: everything static. One owner per piece of state (see [ARCHITECTURE.md](ARCHITECTURE.md#tasks)).
+- Comments explain *why*.
+- Project sources build with `-Wall -Wextra -Wdouble-promotion` and should stay warning-free. Float literals need an `f` suffix — doubles are software-emulated on this core.
 
 ### Commit messages
-
-Keep commits atomic (one logical change per commit). Message format:
 
 ```
 <subsystem>: <short summary under 50 chars>
 
-<longer explanation if needed, wrapped at 72 chars>
-<blank line>
-<reference issues or related commits>
+<why, wrapped at 72 chars>
 ```
 
-Examples:
-```
-fusion: fix delayed-state KF history ring buffer wrap
-
-The history index wasn't wrapping correctly after reaching the end of
-the 16-entry ring, causing the wrong past state to be rewound and
-applied. Now uses modulo arithmetic consistently.
-
-Fixes #42
-```
-
-```
-canbus: add GPS_Gate broadcast message (0x6BC)
-
-Gates are now sent once per 8 CAN cycles (~5 Hz aggregate) for the
-dashboard to draw the track live. Gate index round-robins; cleared
-slots are broadcast with valid=0.
-```
+e.g. `canbus: use front-left wheel speed only`.
 
 ## Repository layout
 
 ```
 .
-├── README.md                  # Main product documentation
-├── docs/
-│   ├── QUICK_START.md        # 5-minute build guide
-│   ├── DEVELOPER.md          # This file
-│   ├── ARCHITECTURE.md       # Technical deep dive
-│   ├── DATASHEET.md          # Hardware specs & CAN matrix
-│   ├── DRIVER_GUIDE.md       # User guide (drivers)
-│   ├── NOTES.md              # Dev notes, decisions, future work
-│   └── DOCUMENTATION.md      # Navigation guide
-├──
-├── CMakeLists.txt            # Top-level build config
-├── CMakePresets.json         # Build presets (Release, Debug, etc.)
-├── cmake/                    # CMake modules
-├──
+├── README.md, CHANGELOG.md
+├── CMakeLists.txt, CMakePresets.json, cmake/   # build
+├── STM32G431XB_FLASH.ld                        # linker script (reserves the gate store)
+├── Core/                  # MCU glue: clocks, peripheral init, interrupts, FreeRTOS config
 ├── SUFST/
-│   ├── Inc/                  # Header files, by subsystem
-│   │   ├── fusion/           # AHRS, Kalman filter, geodesy, timebase
-│   │   ├── gps/              # UBX protocol
-│   │   ├── imu/              # LSM6DSO32, sensor-hub, mag-cal
-│   │   ├── canbus/           # CAN messages, broadcast state
-│   │   ├── laptimer/         # Gate storage, lap timing
-│   │   ├── persist/          # Flash-backed persistence
-│   │   ├── sys/              # App-level task wiring, buttons, LEDs
-│   │   ├── board/            # Compile-time config (rates, pins)
-│   │   └── app.h             # Inter-task messaging
-│   └── Src/                  # Implementation (.c files, mirrors Inc/)
-│       ├── fusion/
-│       ├── gps/
-│       ├── imu/
-│       ├── canbus/
-│       ├── laptimer/
-│       ├── persist/
-│       ├── sys/
-│       └── app.c             # Task creation, queues, main app loop
-│
-├── Core/                     # STM32 HAL, FreeRTOS, MSP (auto-gen)
-├── Drivers/                  # Vendor drivers (STM32Cube SDK)
-├── Middlewares/              # FreeRTOS, CMSIS
-│
-├── tests/                    # Unit tests (host-side)
-│   ├── test_ubx.c           # UBX parsing tests
-│   ├── test_can_pack.c      # CAN codec tests
-│   ├── test_kf6.c           # Kalman filter tests
-│   ├── CMakeLists.txt       # Test build config
-│   └── *.deps               # Test-to-source mappings
-│
-├── tools/
-│   ├── GPS.dbc              # CAN database (messages, signals)
-│   └── dashboard/           # PyQt6 reference UI
-│       ├── src/gps_dashboard/
-│       │   ├── __main__.py
-│       │   ├── ui/          # Main window, plots, track map
-│       │   └── track_memory.py  # Gate persistence (desktop)
-│       ├── tests/
-│       ├── pyproject.toml
-│       └── README.md        # Dashboard-specific docs
-│
-└── build/                   # CMake build outputs (not committed)
+│   ├── Inc/<module>/*.h   # + Inc/board/board_config.h (tunables)
+│   └── Src/
+│       ├── canbus/        # CAN packing, broadcast state, can_task
+│       ├── fusion/        # AHRS, KF, geodesy, time base
+│       ├── gps/           # UBX, F9P configuration over I2C, gps_task
+│       ├── imu/           # LSM6DSO32/IIS2MDC driver, mag calibration, imu_task
+│       ├── laptimer/      # gates, lap state machine
+│       ├── nmea/          # NMEA formatting, aux_task
+│       ├── persist/       # flash store
+│       └── sys/           # app.c (task/queue creation), sys_task
+├── Drivers/, Middlewares/ # STM32 HAL, CMSIS, FreeRTOS (vendor code)
+├── tests/                 # host unit tests
+├── tools/GPS.dbc          # CAN database (authoritative)
+├── tools/dashboard/       # PyQt6 reference dashboard + CAN simulator
+└── docs/
 ```
-
-## Continuous integration
-
-The project builds automatically on each commit (via GitHub Actions or similar). The CI pipeline:
-
-1. Builds Release and Debug firmware
-2. Checks binary size (must fit in 128 KB flash)
-3. Runs all unit tests
-4. Validates code formatting (clang-format)
-5. Checks for common issues (missing includes, typos)
-
-Before pushing, run locally:
-
-```bash
-# Build both variants
-cmake --preset Release && cmake --build --preset Release
-cmake --preset Debug && cmake --build --preset Debug
-
-# Run tests
-cmake -B build-host -DGPS_HOST_TESTS=ON -G Ninja
-cmake --build build-host && ctest --test-dir build-host
-
-# Check formatting
-clang-format -i SUFST/Src/**/*.c SUFST/Inc/**/*.h
-```
-
-## Performance
-
-The firmware is designed to run soft real-time on a 170 MHz STM32G431:
-
-| Task | Rate | CPU load | Notes |
-|------|------|----------|-------|
-| `imu_task` | 104 Hz | ~18% | SPI read + AHRS + KF predict + lap check |
-| `gps_task` | ~1 Hz (varies) | ~3% | UBX parsing, PVT handling, boot config |
-| `can_task` | ~100 Hz (staggered) | ~8% | CAN TX (periodic broadcast + events) |
-| `aux_task` | ~1 Hz | ~1% | NMEA synthesis to MoTeC (USART3 TX) |
-| `sys_task` | 10 Hz | ~2% | Buttons, LEDs, temperature |
-| **Idle** | — | ~68% | CPU available for other systems |
-| **Total load** | — | **~32%** | Plenty of headroom |
-
-Monitor live via the dashboard's `GPS_Status` message (CAN ID 0x6B9), field `cpu_load_pct`.
 
 ## Troubleshooting
 
-### Build errors
-
-| Error | Fix |
-|-------|-----|
-| `arm-none-eabi-gcc: command not found` | Install ARM toolchain; check PATH |
-| `CMake error: preset not found` | Run `cmake --list-presets` |
-| `undefined reference to 'function'` | Check CMakeLists.txt includes all `.c` sources |
-| Flash size exceeded | Check binary with `arm-none-eabi-size` |
-
-### Test failures
-
-| Error | Fix |
-|-------|-----|
-| `undefined reference to '__errno'` | Update GCC to 13.x+; workaround is in `Core/Src/syscalls_errno.c` |
-| Tests don't link | Check `test_<module>.deps` includes all required `.c` files |
-| Floating-point assertion | Add `-lm` to linker; CMakeLists.txt already does this |
-
-### Hardware issues
-
-| Symptom | Diagnosis |
-|---------|-----------|
-| Board doesn't program | Check ST-LINK connection; verify USB cable |
-| No debug output | Check USART1 baud (115200) and TX pin (PB6) |
-| GPS never locks | Antenna not connected or clear sky view blocked |
-| CAN traffic missing | Check termination resistor (120 Ω); verify CAN transceiver power |
-
----
-
-**Need help?** Check [ARCHITECTURE.md](ARCHITECTURE.md) for deep dives, or ask the team.
+| Problem | Fix |
+|---------|-----|
+| `arm-none-eabi-gcc: command not found` | Toolchain not on `PATH` |
+| `undefined reference to '__errno'` | Already handled by `Core/Src/syscalls_errno.c` and `-fno-math-errno`; check neither was removed |
+| Debug build overflows flash | It is at 87 %: build Release, or trim |
+| Host tests won't link a module | Add its source to `tests/test_<module>.deps` |
+| Board resets every ~1.25 s | Watchdog: something blocks `sys_task` (lowest priority) |
+| No CAN traffic | Transceiver power, 120 Ω termination at both bus ends, bit rate |
+| GPS fault flag set | F9P not answering on I2C (address 0x42), or no UBX on USART3 — check JP/NT1 and the MicroMod board |

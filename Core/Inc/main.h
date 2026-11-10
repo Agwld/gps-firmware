@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
+
 #include "stm32g4xx_hal.h"
 
 /*
@@ -82,6 +84,13 @@ extern DMA_HandleTypeDef hdma_spi1_rx;
 extern DMA_HandleTypeDef hdma_spi1_tx;
 
 void Error_Handler(void);
+
+/**
+ * @brief Read the MCU die temperature from the internal sensor (adc.c).
+ * @return false, leaving *temp_c untouched, if the ADC isn't available
+ *         or the conversion failed.
+ */
+bool adc_read_mcu_temp_c(float *temp_c);
 
 #ifdef __cplusplus
 }

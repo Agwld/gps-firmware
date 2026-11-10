@@ -25,6 +25,17 @@
 #define KF6_INIT_POS_VAR (200.0f * 200.0f)
 #define KF6_INIT_VEL_VAR (100.0f * 100.0f)
 
+/* Consecutive chi-squared-rejected GPS position fixes after which the
+ * filter, not the receiver, is taken to be the one that is wrong. The
+ * outlier gate assumes the state is roughly right and a fix occasionally
+ * isn't; after a GPS outage the opposite holds - the state has dead-
+ * reckoned away on accelerometer bias/tilt error that the white-noise Q
+ * model doesn't cover, so P still claims sub-metre confidence while the
+ * state is many metres out. Every fix then fails the gate, forever, and
+ * the estimate never comes back. Half a second of unanimous disagreement
+ * (at 20 Hz) is far beyond any multipath glitch the gate exists for. */
+#define KF6_REJECT_RESET_COUNT 10U
+
 typedef float kf6_vec_t[KF6_N];
 typedef float kf6_mat_t[KF6_N][KF6_N];
 
@@ -42,6 +53,8 @@ static kf6_mat_t s_p;
 static kf6_hist_entry_t s_hist[KF6_HISTORY_LEN];
 static uint8_t s_hist_count;
 static uint8_t s_hist_head; /* index of the most recently written entry */
+
+static uint8_t s_pos_reject_streak; /* consecutive gated-out position fixes */
 
 static void
 mat_mult(const kf6_mat_t a, const kf6_mat_t b, kf6_mat_t out)
@@ -199,8 +212,10 @@ innovation_is_reasonable(const float y[KF6_M_MAX],
  * declared sigma comes from the receiver's own (occasionally optimistic)
  * hAcc/sAcc; the wheelspeed-derived speed correction runs ungated since
  * it converges continuously at a fixed, already-conservative sigma rather
- * than arriving as a discrete, potentially-wrong fix. */
-static void
+ * than arriving as a discrete, potentially-wrong fix.
+ *
+ * Returns false if the measurement was rejected by the gate. */
+static bool
 kf_update(kf6_vec_t x, kf6_mat_t p, const float h[KF6_M_MAX][KF6_N],
           const float z[KF6_M_MAX], const float r[KF6_M_MAX][KF6_M_MAX],
           uint32_t m, bool gate)
@@ -240,7 +255,7 @@ kf_update(kf6_vec_t x, kf6_mat_t p, const float h[KF6_M_MAX][KF6_N],
     mat_inverse(s, sinv, m);
 
     if (gate && !innovation_is_reasonable(y, sinv, m)) {
-        return; /* reject: leave (x, p) exactly as they were */
+        return false; /* reject: leave (x, p) exactly as they were */
     }
 
     float k[KF6_N][KF6_M_MAX];
@@ -298,12 +313,16 @@ kf_update(kf6_vec_t x, kf6_mat_t p, const float h[KF6_M_MAX][KF6_N],
             p[i][j] += sum;
         }
     }
+
+    return true;
 }
 
-void
-kf6_init(void)
+/* Back to the uninformative prior, with the history ring emptied (its
+ * entries carry the old covariance and would be replayed otherwise). The
+ * state itself is left alone - the next correction overwrites it. */
+static void
+reset_covariance(void)
 {
-    memset(s_x, 0, sizeof(s_x));
     memset(s_p, 0, sizeof(s_p));
     for (uint32_t i = 0; i < 3U; i++) {
         s_p[i][i] = KF6_INIT_POS_VAR;
@@ -312,6 +331,14 @@ kf6_init(void)
 
     s_hist_count = 0U;
     s_hist_head = 0U;
+}
+
+void
+kf6_init(void)
+{
+    memset(s_x, 0, sizeof(s_x));
+    reset_covariance();
+    s_pos_reject_streak = 0U;
 }
 
 void
@@ -338,15 +365,16 @@ kf6_predict(uint32_t tick, float ax, float ay, float az, quat_t q, float dt)
     }
 }
 
-static void
+/* Returns false if the measurement was rejected by the outlier gate (in
+ * which case nothing changed). */
+static bool
 correct_with_rewind(uint32_t fix_tick, const float h[KF6_M_MAX][KF6_N],
                      const float z[KF6_M_MAX],
                      const float r[KF6_M_MAX][KF6_M_MAX], uint32_t m,
                      bool gate)
 {
     if (s_hist_count == 0U) {
-        kf_update(s_x, s_p, h, z, r, m, gate);
-        return;
+        return kf_update(s_x, s_p, h, z, r, m, gate);
     }
 
     uint32_t oldest_idx =
@@ -373,7 +401,9 @@ correct_with_rewind(uint32_t fix_tick, const float h[KF6_M_MAX][KF6_N],
     memcpy(x_work, s_hist[target_idx].x, sizeof(x_work));
     memcpy(p_work, s_hist[target_idx].p, sizeof(p_work));
 
-    kf_update(x_work, p_work, h, z, r, m, gate);
+    if (!kf_update(x_work, p_work, h, z, r, m, gate)) {
+        return false; /* rejected: history and live state are untouched */
+    }
 
     memcpy(s_hist[target_idx].x, x_work, sizeof(x_work));
     memcpy(s_hist[target_idx].p, p_work, sizeof(p_work));
@@ -387,9 +417,10 @@ correct_with_rewind(uint32_t fix_tick, const float h[KF6_M_MAX][KF6_N],
 
     memcpy(s_x, x_work, sizeof(s_x));
     memcpy(s_p, p_work, sizeof(s_p));
+    return true;
 }
 
-void
+bool
 kf6_correct_pos(uint32_t fix_tick, float e_m, float n_m, float u_m,
                 float sigma_pos_m)
 {
@@ -406,7 +437,23 @@ kf6_correct_pos(uint32_t fix_tick, float e_m, float n_m, float u_m,
     r[1][1] = var;
     r[2][2] = var;
 
-    correct_with_rewind(fix_tick, h, z, r, 3U, true);
+    if (correct_with_rewind(fix_tick, h, z, r, 3U, true)) {
+        s_pos_reject_streak = 0U;
+        return false;
+    }
+
+    if (++s_pos_reject_streak < KF6_REJECT_RESET_COUNT) {
+        return false;
+    }
+
+    /* The filter has diverged from GPS (see KF6_REJECT_RESET_COUNT).
+     * Re-open the covariance and take this fix ungated: position snaps
+     * to it, and with the velocity variance wide open again the velocity
+     * fix that follows passes its own gate and snaps too. */
+    s_pos_reject_streak = 0U;
+    reset_covariance();
+    (void) kf_update(s_x, s_p, h, z, r, 3U, false);
+    return true;
 }
 
 void
@@ -426,7 +473,7 @@ kf6_correct_vel(uint32_t fix_tick, float ve_mps, float vn_mps, float vu_mps,
     r[1][1] = var;
     r[2][2] = var;
 
-    correct_with_rewind(fix_tick, h, z, r, 3U, true);
+    (void) correct_with_rewind(fix_tick, h, z, r, 3U, true);
 }
 
 void
@@ -445,7 +492,7 @@ kf6_correct_speed(uint32_t fix_tick, float speed_mps, float heading_rad,
     /* Ungated (see kf_update()'s doc comment): this runs continuously off
      * wheelspeed at a fixed, already-conservative sigma rather than as a
      * discrete fix that can itself be wrong. */
-    correct_with_rewind(fix_tick, h, z, r, 1U, false);
+    (void) correct_with_rewind(fix_tick, h, z, r, 1U, false);
 }
 
 void

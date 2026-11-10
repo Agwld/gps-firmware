@@ -94,10 +94,31 @@
 #define LAP_BUTTON_CLEAR_MS    5000U  /* very long press: clear all gates */
 
 /*
- * NMEA output (MoTeC), USART2
+ * Fusion
+ */
+/* Wheel-speed aiding of the position/velocity filter from the VCU's
+ * Wheel_Speeds frame (0x251), using the front-left wheel only (the one
+ * sensor on the car that reads reliably). OFF by default: it is
+ * unvalidated on the car, and it is fused ungated along the AHRS heading
+ * - so wheel slip/lock-up, or a heading error from an uncalibrated
+ * magnetometer, would pull the velocity estimate (and with it every
+ * gate-crossing time) away from the GPS solution. Set to 1 only after
+ * checking FL speed against GPS speed on track; the open-sky benefit is
+ * limited to riding out GPS dropouts. */
+#define KF_WHEELSPEED_AIDING   0
+
+/* A fix (or, for the receiver link, any NAV-PVT) older than this is
+ * treated as lost: the fusion status drops GPS_AIDED and lap timing is
+ * flagged degraded. 1 s is 20 missed fixes at the nominal rate. */
+#define GPS_FIX_STALE_MS       1000U
+
+/*
+ * NMEA output (MoTeC) on USART3 TX, at GPS_UART_BAUD (shared with RX).
+ * GGA + RMC + VTG is ~190 bytes per cycle, i.e. ~16 ms on the wire, so
+ * the rate cannot usefully exceed the fix rate.
  */
 #define NMEA_OUT_RATE_HZ       10U
-#define NMEA_OUT_BAUD          115200U
+#define NMEA_OUT_RATE_MAX_HZ   GPS_NAV_RATE_HZ
 
 /*
  * CAN broadcast rates (per canbc rota; periods in 10 ms slots)

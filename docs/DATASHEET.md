@@ -1,268 +1,228 @@
 # Datasheet — GPS Mainboard Hardware & Firmware Specifications
 
-Complete technical specifications for the STAG 12 GPS mainboard and firmware.
+Technical reference for the STAG 12 GPS mainboard and firmware v1.0.0.
+Where this page and the code disagree, the code wins: pins are in
+[`Core/Inc/main.h`](../Core/Inc/main.h), rates and constants in
+[`SUFST/Inc/board/board_config.h`](../SUFST/Inc/board/board_config.h), and the
+CAN interface in [`tools/GPS.dbc`](../tools/GPS.dbc) /
+[`SUFST/Inc/canbus/can_defs.h`](../SUFST/Inc/canbus/can_defs.h).
 
 ## Hardware specifications
 
 ### Microcontroller
 
-| Component | Spec |
-|-----------|------|
-| Part | STM32G431CB (128 KB flash, 32 KB SRAM) — required |
-| Clock | 170 MHz internal RC oscillator (calibrated) |
-| Flash | 126 KB usable (last 2 KB reserved for gate/mag-cal storage) |
-| SRAM | 32 KB total (16 KB for task stacks + queues, 16 KB for buffers) |
-| Floating-point | Cortex-M4F with FPU (single-precision, hardware accelerated) |
-| HSE | 25 Mhz Crystal Oscillator |
-| RTC | 32 kHz LSI (low-speed internal oscillator) for watchdog |
-| Watchdog | Independent Watchdog (IWDG) with 5 s timeout |
-| **Package** | 48-pin LQFP |
+| Item | Spec |
+|------|------|
+| Part | STM32G431CBT (128 KB flash, 32 KB SRAM, 48-pin LQFP) — required |
+| Core | Cortex-M4F, single-precision FPU (double is software-emulated) |
+| Clock | 25 MHz HSE crystal → PLL → 170 MHz SYSCLK (boost mode); APB1/APB2 at 170 MHz |
+| Flash | 124 KB for code; the top 4 KB (two 2 KB pages, 0x0801F000–0x0801FFFF) hold the gate/mag-cal store |
+| SRAM | 22 KB main SRAM (SRAM1 + SRAM2) + 10 KB CCM RAM |
+| Watchdog | IWDG on the 32 kHz LSI, ~1.25 s timeout, started before the scheduler and refreshed by `sys_task` every 20 ms |
 
 ### GNSS receiver
 
-| Component | Spec |
-|-----------|------|
-| Part | u-blox ZED-F9P (multi-constellation GNSS) |
-| Form factor | SparkFun MicroMod function board (M.2 slot on mainboard) |
-| Constellations | GPS + Galileo (other constellations available via config) |
-| Update rate | 20 Hz (5 Hz optional; 25 Hz supported with harsher cuts) |
-| Time-to-first-fix | ~30 s cold start, ~1–5 s warm start |
-| **Accuracy** (standalone) | — |
-| Horizontal (CEP50) | 2.5 m RMS typical |
-| Vertical (RMS) | 4 m RMS typical |
-| **Time accuracy** (PPS) | 20 ns RMS (disciplined 1 PPS output) |
-| Message rates | NAV-PVT @ 20 Hz, TIM-TM2 on EXTINT event |
-| Power | 150 mA typical @ 3.3 V |
+| Item | Spec |
+|------|------|
+| Part | u-blox ZED-F9P on a SparkFun MicroMod GNSS function board |
+| Configuration | Over I2C (DDC port, address 0x42) at every boot, RAM layer only; re-sent automatically if the NAV-PVT stream stops |
+| Constellations | GPS + Galileo (GLONASS, BeiDou, QZSS disabled — needed for 20 Hz) |
+| Navigation rate | 20 Hz (`GPS_NAV_RATE_HZ`) |
+| Dynamic model | Automotive |
+| Messages used | UBX-NAV-PVT every epoch, UBX-TIM-TM2 on an EXTINT edge |
+| Data link | F9P UART1 TX → MCU USART3 RX, 115200 baud, UBX only |
+| Time pulse | 1 PPS → PA7 (TIM3_CH2 input capture) |
+| RTK | Receiver accepts RTCM3 on UART1 RX, wired straight from the RS232 input (JP7 2‑3); needs an external correction source |
 
-### Inertial measurement unit
+Accuracy and time-to-first-fix are as specified in the u-blox ZED-F9P datasheet.
 
-| Component | Spec |
-|-----------|------|
-| Accel + Gyro | LSM6DSO32 (ST MEMS, SPI interface) |
-| **Accel specs** | — |
-| Ranges | ±16 g, ±8 g, ±4 g, ±2 g (firmware set to ±16 g) |
-| ODR | Up to 6.66 kHz; firmware set to **104 Hz** |
-| Sensitivity | ~0.488 mg/LSB @ ±16 g, 16-bit output |
-| Noise | 80 mg/√Hz typical |
-| **Gyro specs** | — |
-| Range | ±4000 °/s (firmware set to ±2000 °/s full scale) |
-| ODR | Up to 6.66 kHz; firmware set to **104 Hz** |
-| Sensitivity | ~70 mdps/LSB @ ±2000 °/s, 16-bit output |
-| Noise | 4.4 °/s/√Hz typical |
-| **Magnetometer** | IIS2MDC via sensor-hub I2C |
-| Range | ±50 mGauss |
-| ODR | Up to 100 Hz; firmware set to 10 Hz |
-| Interface | I2C behind LSM6DSO32 sensor-hub master (MCU never talks to mag directly) |
+### Inertial sensors
 
-### Temperature sensor
+| Item | Spec |
+|------|------|
+| Accel + gyro | ST LSM6DSO32 on SPI1 (mode 3, ~5.3 MHz, DMA) |
+| Accel | ±16 g full scale (part supports ±4/8/16/32 g), 0.488 mg/LSB, 104 Hz ODR |
+| Gyro | ±2000 dps full scale, 70 mdps/LSB, 104 Hz ODR |
+| Data-ready | Gyro DRDY on INT1 → PC15 (EXTI, rising edge) paces the fusion loop |
+| Magnetometer | ST IIS2MDC (±50 gauss, 1.5 mG/LSB) on the LSM6DSO32's sensor-hub I2C master; continuous mode, 100 Hz; the MCU never talks to it directly |
+| Mounting | Fixed in `IMU_MOUNT_MATRIX` / `MAG_MOUNT_MATRIX` (`board_config.h`) — the two parts are mounted differently |
 
-| Component | Spec |
-|-----------|------|
-| Part | MicroChip MCP9800 (I2C, ±5 °C accuracy) |
-| I2C address | 0x4D (A5 variant, fixed address) |
-| Resolution | 0.0625 °C (9-bit mode) |
-| Conversion time | 240 ms |
-| Range | −55 to +125 °C |
-| Mounted | On IMU bus (measures board temperature) |
+### Temperature
+
+| Source | Spec |
+|--------|------|
+| Board ambient | Microchip MCP9800A5 on I2C2, address 0x4D, power-up 9-bit mode (0.5 °C/LSB), read at 1 Hz |
+| IMU die | LSM6DSO32 internal sensor, read at 1 Hz |
+| MCU die | STM32G431 internal sensor via ADC1 and the factory calibration, whole degrees, read at 1 Hz |
 
 ### CAN interface
 
-| Spec | Value |
+| Item | Value |
 |------|-------|
-| Transceiver | TI TCAN3404 |
-| Bus | FDCAN1 on STM32 (CAN-FD capable, running classic CAN mode) |
-| Bit rate | 1 Mbps (nominal), fallback 500 kbps if auto-negotiation needed |
-| Termination | 120 Ω resistor on both ends of the bus (external to this board) |
-
-### Power
-
-| Spec | Value |
-|------|-------|
-| Supply voltage | +12 V nominal (10–16 V tolerance, car battery) |
-| Quiescent draw | ~200 mA (GNSS + IMU active) |
-| Peak draw | ~250 mA (SPI/CAN peaks) |
+| Controller | FDCAN1 in classic CAN mode, PA11 RX / PA12 TX |
+| Bit rate | 1 Mbit/s, 88 % sample point (500 kbit/s by building with `-DCAN_BITRATE_500K`) |
+| Identifiers | 11-bit standard; node transmits 0x6B0–0x6BD, receives 0x6BF and 0x251 |
+| Bus-off | Recovered automatically (checked once a second) |
+| Termination | Not on this board |
 
 ### UART interfaces
 
 | UART | Use | Pins | Baud | Notes |
 |------|-----|------|------|-------|
-| USART3 RX | GPS UBX stream in | PB11 | 115200 | F9P UART1 TX hard-wired via net-tie NT1; F9P switched from its 38400 default over I2C at boot |
-| USART3 TX | NMEA to MoTeC | PB10 | 115200 | Via solder jumper JP6 (2‑3) → MAX3232 → RS232 out. Shares USART3's single baud register with RX |
-| USART1 | Debug output | PB6 TX, PB7 RX | 115200 | Not used in stock firmware; reserved for debugging |
-| USART2 | Unused | PA2, PA15 | — | PA2 is unrouted on the board; PA15 only reaches JP7, which is bridged 2‑3 (RTCM → GPS direct) |
+| USART3 RX | GPS UBX stream in | PB11 | 115200 | F9P UART1 TX via net tie NT1; circular DMA |
+| USART3 TX | NMEA out to MoTeC | PB10 | 115200 | Via JP6 (2‑3) → MAX3232 → RS232. Shares the baud register with RX; DMA |
+| USART1 | Debug | PB6 TX, PB7 RX | 115200 | Initialised, unused by the stock firmware |
+| USART2 | Unused | PA2, PA15 | — | Not initialised. PA2 unrouted; PA15 only reaches JP7 |
 
-**GPS configuration goes over I2C, not UART**: the board has no MCU→GPS UART path, so all UBX-CFG-VALSET traffic rides I2C2 to the F9P's DDC port (address 0x42). The high-rate UBX stream still arrives on USART3 RX.
-
-### UART direction solder jumpers
+### Solder jumpers
 
 | Jumper | Setting | Effect |
 |--------|---------|--------|
-| NT1 | fixed (net tie) | F9P UART1 TX → USART3 RX, always |
-| **JP6** | **bridge 2‑3** | MCU NMEA (USART3 TX) → RS232 out → MoTeC. *Do not bridge 1‑2*: the F9P's UART1 carries binary UBX in this firmware, which would feed garbage to the MoTeC |
-| **JP7** | **bridge 2‑3** | RS232 in → F9P UART1 RX directly — the RTK/RTCM correction path, no MCU involvement. (1‑2 routes RS232 in to PA15 instead; unsupported by stock firmware) |
+| NT1 | fixed | F9P UART1 TX → USART3 RX |
+| **JP6** | **bridge 2‑3** | MCU NMEA (USART3 TX) → RS232 out. Don't bridge 1‑2: the F9P's UART1 carries binary UBX |
+| **JP7** | **bridge 2‑3** | RS232 in → F9P UART1 RX (RTCM corrections). 1‑2 routes it to PA15, which the firmware doesn't use |
 
-### GPIO & external interfaces
+### GPIO
 
 | Function | Pin | Notes |
 |----------|-----|-------|
-| **Time sync** | — | — |
-| GPS PPS input | PA7 (TIM3_CH2) | Rising edge capture, fed to timebase.c for tick ↔ iTOW mapping |
-| **Steering wheel** | — | — |
-| Lap button | PC13 | Active high, debounced in sys_task (20 ms hysteresis) |
-| **Status signals** | — | — |
-| Status LED | PA5 | GPIO output, indicates system state |
-| Fault LED | PC14 | GPIO output, indicates error condition |
-
+| Lap button | PC13 | Active high, RC + Schmitt conditioned on the board; polled every 20 ms |
+| User button | PC14 | Active low; configured, unused |
+| User LED | PB15 | On when GPS has a fix **and** the IMU is running |
+| Error LED | PA10 | On while any GPS/IMU/mag fault flag is set; solid with interrupts off = `Error_Handler()` |
+| GPS PPS | PA7 | TIM3_CH2 capture, 1 MHz timebase |
+| GPS EXTINT tap | PA5 | Input; the event button edge is time-stamped by the F9P (TIM-TM2) |
+| GPS reset / power | PB1 (open drain) / PA1 | Held released / on |
+| IMU chip select | PB9 | Active low |
+| I2C2 | PA8 SDA / PA9 SCL | 100 kHz; F9P DDC, MCP9800, MicroMod EEPROM |
+| SPI1 | PB3 SCK / PB4 MISO / PB5 MOSI | LSM6DSO32 |
 
 ## Firmware specifications
 
-### Flash / SRAM budget
+### Memory (v1.0.0, GCC 13.3)
 
-The board requires the **STM32G431CB** (128 KB flash, 32 KB SRAM):
+| Build | Flash | RAM | CCM |
+|-------|-------|-----|-----|
+| Release (`-Os`) | 65.6 KB of 124 KB (52 %) | 17.9 KB of 22 KB (80 %) | 0.6 KB of 10 KB |
+| Debug (`-O0 -g3`) | 109.9 KB of 124 KB (87 %) | 17.9 KB of 22 KB | 1.1 KB of 10 KB |
 
-| Build | Size | Flash used |
-|-------|------|------------|
-| Release (`-Os`) | ~58 KB | 45% of 128 KB |
-| Debug (`-O0`) | ~94 KB | 73% of 128 KB |
+The Debug build is close to the flash limit; watch it when adding code.
 
-### Timing accuracy
+### Tasks
 
-| Metric | Spec |
-|--------|------|
-| Position update rate | 104 Hz (IMU-based estimate) |
-| Gate crossing detection resolution | ~1 ms (linear interpolation between samples) |
-| Lap time precision | ±1 ms (depends on GPS fix latency, typically 20–60 ms post-facto) |
-| Time-stamping | GPS time-of-week (iTOW) via PPS-disciplined tick counter |
-| Synchronization accuracy | ±20 ns (GPS PPS clock) |
+All static (no heap). Stack sizes are derived from `-fstack-usage`; see the
+comment in [`SUFST/Inc/sys/app.h`](../SUFST/Inc/sys/app.h) before changing them.
 
-### Real-time performance
+| Task | Priority | Rate | Stack | Role |
+|------|----------|------|-------|------|
+| `imu_task` | 6 | 104 Hz (IMU DRDY) | 3 KB | IMU read, AHRS, KF, gates, lap timing, flash store |
+| `gps_task` | 5 | per UBX frame | 2 KB | F9P configuration, UBX parsing, PPS pairing, link supervision |
+| `can_task` | 3 | 100 Hz slots | 1 KB | Broadcast rota, Lap_Event TX, command dispatch |
+| `aux_task` | 2 | 10 Hz (configurable) | 1 KB | NMEA GGA/RMC/VTG to the MoTeC |
+| `sys_task` | 1 | 50 Hz | 1.25 KB | Lap button, LEDs, temperatures, watchdog, status |
 
-| Task | Rate | CPU load | Max latency | Stack |
-|------|------|----------|-------------|-------|
-| `imu_task` | 104 Hz | ~18% | 9.6 ms | 2 KB |
-| `gps_task` | variable | ~3% | <50 ms | 2 KB |
-| `can_task` | ~100 Hz | ~8% | <10 ms | 1.5 KB |
-| `aux_task` | ~1 Hz | ~1% | <1 s | 1.5 KB |
-| `sys_task` | 10 Hz | ~2% | <100 ms | 1.5 KB |
-| **Total** | — | **~32%** | — | — |
-| **Idle** | — | **~68%** | — | — |
+CPU load has not yet been measured on hardware; the node reports it live in
+`GPS_Status.cpu_load_pct`.
 
-Measured via FreeRTOS `ulTaskGetIdleRunTimePercent()` on the 170 MHz STM32G431.
+### Timing
 
-### Memory usage (CB variant)
+| Metric | Value |
+|--------|-------|
+| Fused state rate | 104 Hz |
+| Crossing time resolution | Linear interpolation between 9.6 ms samples |
+| Time base | TIM3 at 1 MHz, mapped to GPS time-of-week by PPS (rate re-measured every second) |
+| Lap timing prerequisite | PPS time lock **and** an anchored ENU frame; flagged `DEGRADED` without a recent fix |
 
-| Region | Used | Available | % |
-|--------|------|-----------|---|
-| Flash (text + RO data) | 57 KB | 126 KB | 45% |
-| SRAM (stacks + queues + buffers) | ~24 KB | 32 KB | 75% |
-| Flash store (gates + mag-cal) | 0–2 KB | 2 KB | 0–100% |
+End-to-end lap-time accuracy has not yet been measured against a reference.
 
-Stack sizes are conservative; each task could be reduced by ~500 bytes if needed (currently using <60% of allocated stack per task).
+### CAN message matrix
 
-### CAN message matrix (ID 0x6B0–0x6BF)
+Little-endian, 11-bit IDs. Rates are from the broadcast rota in
+[`canbc_task.c`](../SUFST/Src/canbus/canbc_task.c).
 
-All little-endian Intel-style packing per SUFST convention. See [tools/GPS.dbc](../tools/GPS.dbc) for authoritative definitions.
+| ID | Name | Rate | DLC | Contents |
+|----|------|------|-----|----------|
+| 0x6B0 | GPS_Position | 20 Hz | 8 | Fused lat, lon (i32, 1e-7°) |
+| 0x6B1 | GPS_Velocity | 20 Hz | 8 | Speed (0.01 m/s), course (0.01°), altitude (0.1 m), fix type (4 bit), satellites (4 bit, saturates at 15), counter |
+| 0x6B2 | GPS_Attitude | 50 Hz | 8 | Yaw (u16, 0.01°), pitch, roll (i16, 0.01°), fusion status, counter |
+| 0x6B3 | Lap_Status | 10 Hz | 8 | Lap count (u16), running time (u32 ms), sector (u8), flags |
+| 0x6B4 | Lap_Event | event | 8 | Type, lap (u16), time (u32 ms), counter |
+| 0x6B5 | GPS_Quality | 5 Hz | 7 | hAcc (mm), sAcc (0.1 mm/s), PDOP (0.01), flags |
+| 0x6B6 | GPS_IMU_Accel | 100 Hz | 7 | x, y, z (i16, 1 mg, vehicle frame), counter |
+| 0x6B7 | GPS_IMU_Gyro | 100 Hz | 7 | x, y, z (i16, 0.0625 dps, vehicle frame), counter |
+| 0x6B8 | GPS_Temp | 1 Hz | 6 | Board, IMU, MCU temperature (i16, 0.01 °C) |
+| 0x6B9 | GPS_Status | 1 Hz | 7 | Uptime (s), status bits, GPS link retries, IMU read errors, CPU load (%) |
+| 0x6BA | GPS_Mag | 10 Hz | 7 | x, y, z (i16, 0.1 µT, calibrated), calibration state |
+| 0x6BB | GPS_Frame_Origin | 1 Hz | 8 | ENU origin lat, lon (i32, 1e-7°); not sent until a fix anchors it |
+| 0x6BC | GPS_Gate | 5 Hz (one slot per frame) | 8 | Index, flags (bit0 valid), east, north (i16, 0.1 m), heading (u16, 0.1°) |
+| 0x6BD | GPS_Time | 1 Hz | 8 | iTOW (u32 ms), UTC h/m/s, flags (bit0 UTC valid, bit1 fully resolved) |
 
-#### TX messages (broadcasts from node)
+#### Status bit fields
 
-| ID | Name | Period | Signals | Bytes |
-|----|------|--------|---------|-------|
-| 0x6B0 | GPS_Position | 50 ms (20 Hz) | lat_deg, lon_deg | 8 |
-| 0x6B1 | GPS_Velocity | 50 ms (20 Hz) | speed_mps, course_deg, altitude_m, fix_ok | 8 |
-| 0x6B2 | GPS_Attitude | 20 ms (50 Hz) | yaw_deg, pitch_deg, roll_deg, ahrs_ok | 8 |
-| 0x6B3 | Lap_Status | 100 ms (10 Hz) | lap_num, running_time_ms, sector_num, flags | 8 |
-| 0x6B4 | Lap_Event | event | event_type, gps_time_ms, button_count | 8 |
-| 0x6B5 | GPS_Quality | 200 ms (5 Hz) | hdop, vdop, fix_type, rtk_status | 8 |
-| 0x6B6 | GPS_IMU_Accel | 10 ms (100 Hz) | accel_x_g, accel_y_g, accel_z_g | 7 |
-| 0x6B7 | GPS_IMU_Gyro | 10 ms (100 Hz) | gyro_x_dps, gyro_y_dps, gyro_z_dps | 7 |
-| 0x6B8 | GPS_Temp | 1000 ms (1 Hz) | board_temp_c, imu_temp_c, mcu_temp_c | 6 |
-| 0x6B9 | GPS_Status | 1000 ms (1 Hz) | uptime_s, fault_bits, cpu_load_pct | 8 |
-| 0x6BA | GPS_Mag | 100 ms (10 Hz) | mag_x_mgauss, mag_y_mgauss, mag_z_mgauss, cal_status | 8 |
-| 0x6BB | GPS_Frame_Origin | 1000 ms (1 Hz) | origin_lat_deg, origin_lon_deg, origin_valid | 8 |
-| 0x6BC | GPS_Gate | ~200 ms (5 Hz agg) | gate_index, gate_flags, east_m, north_m, heading_deg | 8 |
-| 0x6BD | GPS_Time | 1000 ms (1 Hz) | itow_ms, utc_hour, utc_min, utc_sec, time_flags | 8 |
+| Field | Bits |
+|-------|------|
+| `GPS_Attitude.fusion_status` | 0 IMU OK · 1 mag OK · 2 mag calibrated · 3 origin set · 4 GPS-aided (fix in the last 1 s) · 5 time locked |
+| `Lap_Status.flags` | 0 running · 1 armed (start/finish placed) · 2 degraded (no recent fix or no time lock) |
+| `Lap_Event.type` | 0 lap complete · 1 sector complete · 2 TM2 time mark (time = iTOW) |
+| `GPS_Quality.flags` | 0 gnssFixOK · 1–2 carrier solution (0 none, 1 float, 2 fixed) · 3 differential |
+| `GPS_Mag.cal_status` | 0 uncalibrated · 1 collecting · 2 calibrated · 3 validated against GPS course |
+| `GPS_Status.fault_bits` | The whole status event group: 0 GPS fix · 1 IMU ready · 2 mag ready · 3 time locked · 4 origin set · 5 GPS fault (no NAV-PVT stream) · 6 IMU fault · 7 mag fault |
 
-`GPS_Time` is the bus-wide time reference: `itow_ms` is GPS time-of-week in the same time domain as `Lap_Event` timestamps (for aligning other nodes' data), and the UTC fields drive a human-readable clock. UTC date is not broadcast (the MoTeC datalogger receives it via NMEA RMC). Note GPS time leads UTC by the current leap-second count, so the two fields are not redundant.
+`GPS_Time` is the bus-wide time reference: `itow_ms` is in the same time
+domain as `Lap_Event` TM2 marks. GPS time leads UTC by the leap-second count,
+so the two fields are not redundant. The UTC date is not broadcast (the MoTeC
+gets it via NMEA RMC).
 
-#### RX messages (commands to node)
+#### Received messages
 
-| ID | Name | Signals | Purpose |
-|----|------|---------|---------|
-| 0x6BF | GPS_Command | cmd_id, arg0, arg1 | Gate set/clear, mag-cal, config commands |
+| ID | Name | Source | Use |
+|----|------|--------|-----|
+| 0x6BF | GPS_Command | Dash / laptop | Commands, below |
+| 0x251 | Wheel_Speeds | VCU | Front-left wheel only (the other channels are unreliable); used only if `KF_WHEELSPEED_AIDING` is enabled, which it is not by default |
 
-Command codes (in GPS_Command.cmd_id):
-```
-0x01 = CAN_CMD_GATE_SET           (set gate at slot arg0 via CAN)
-0x02 = CAN_CMD_GATE_CLEAR         (clear gate at slot arg0)
-0x20 = CAN_CMD_CONFIG_SAVE        (trigger flash compaction)
-0xFF = CAN_CMD_GATE_CLEAR_ALL     (clear all gates)
-0x10 = CAN_CMD_MAG_CAL_START      (force a fresh mag recalibration; cal is
-                                   otherwise continuous/automatic)
-0x11 = CAN_CMD_MAG_CAL_STOP       (no-op, retained for compatibility)
-```
+`GPS_Command` (byte 0 = cmd, byte 1 = arg0, byte 2 = arg1):
 
-#### Signal scaling
+| cmd | Name | Arguments |
+|-----|------|-----------|
+| 0x01 | GATE_SET | arg0 = slot 0 (start/finish) – 7, or 0xFE = next free sector. Placed at the current fused position. Setting slot 0 clears all sectors and restarts lap timing |
+| 0x02 | GATE_CLEAR | arg0 = slot, or 0xFF = all |
+| 0x10 | MAG_CAL_START | Discard the magnetometer calibration and re-learn it |
+| 0x11 | MAG_CAL_STOP | Accepted, no effect (calibration is continuous) |
+| 0x20 | CONFIG_SAVE | Compact the flash store once the car is stationary |
+| 0x30 | NMEA_CFG | arg0 = rate 1–20 Hz (0 = unchanged), arg1 = enable (0/1) |
 
-| Signal | Format | Scale | Offset | Range |
-|--------|--------|-------|--------|-------|
-| lat_deg, lon_deg | int32_t | 1e-7 | 0 | ±90 / ±180 |
-| speed_mps | uint16_t | 0.01 | 0 | 0–655 m/s |
-| course_deg | uint16_t | 0.01 | 0 | 0–360° |
-| altitude_m | int16_t | 1 | 0 | ±32768 m |
-| yaw/pitch/roll_deg | int16_t | 0.01 | 0 | ±327.68° |
-| hdop, vdop | uint8_t | 0.1 | 0 | 0–25.5 |
-| accel_*_g | int16_t | 0.001 | 0 | ±32.768 g |
-| gyro_*_dps | int16_t | 0.1 | 0 | ±3276.8 °/s |
-| temp_c | int8_t | 1 | 0 | −128 to +127 °C |
-| gate_east/north_m | int16_t | 0.1 | 0 | ±3276.7 m |
-| gate_heading_deg | uint16_t | 0.1 | 0 | 0–6553.5° |
-| cpu_load_pct | uint8_t | 1 | 0 | 0–100 % |
-| itow_ms | uint32_t | 1 | 0 | 0–604,799,999 ms |
-| utc_hour/min/sec | uint8_t | 1 | 0 | 0–23 / 0–59 / 0–60 |
+### NMEA output
 
-### Flash storage
+GGA, RMC and VTG (talker `GP`) at 10 Hz by default, built from the raw NAV-PVT
+(not the fused state), one burst per cycle. A cycle without a fresh NAV-PVT
+sends nothing; a NAV-PVT without a valid fix goes out flagged invalid (GGA
+quality 0, RMC status V).
 
-| Region | Address | Size | Purpose |
-|--------|---------|------|---------|
-| Firmware (text) | 0x08000000 | ~58 KB | STM32 application |
-| Firmware (RO data) | 0x0800E800 | varies | Constants, lookup tables |
-| Reserved gap | varies | — | Linker script gap |
-| **Gate store** | **0x0801F800** | **2 KB** | Append-only gate + mag-cal log (last flash page) |
-| **Blank flash** | varies | remainder | Available for future use |
+### Flash store
 
-Gate store records:
-```
-Layout: [kind(1)] [key(1)] [gate_valid(1)] [reserved(1)] [payload(12)] [heading(4)] [crc(4)] = 24 bytes
-Max records: ~85 per page before compaction needed
-Clear marker: kind=GATE_CLEAR_ALL wipes all gates
-```
+| Item | Value |
+|------|-------|
+| Location | Two 2 KB pages, 0x0801F000 and 0x0801F800 (A/B) |
+| Record | 32 bytes: kind, key, valid flag, reserved, 6 × float payload, CRC32 |
+| Capacity | 64 records per page |
+| Kinds | 1 gate (absolute lat/lon i32 1e-7° + heading), 2 mag calibration, 3 clear-all marker, 4 compaction-complete marker (with generation) |
+| Compaction | At boot when fewer than 32 slots are free; on `CONFIG_SAVE`; or when a write finds the page full — always only while stationary |
 
+## Firmware feature status
 
-
-## Firmware feature matrix
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| **Core timing** | ✓ Complete | Gate crossing detection, lap/sector times |
-| **Sensor fusion** | ✓ Complete | Mahony AHRS + 6-state Kalman filter |
-| **Gate persistence** | ✓ Complete | Absolute lat/lon, survives power-cycle-and-move |
-| **CAN broadcast** | ✓ Complete | 15 message types, 1 Hz to 100 Hz sampling |
-| **Magnetic calibration** | ✓ Complete | Continuous/automatic; hard-iron + soft-iron (horizontal), GPS-course validated |
-| **NMEA synthesis** | ✓ Complete | MoTeC datalogger compatibility |
-| **Event time-marking** | ✓ Complete | GPS TIM-TM2 for button edge stamping |
-| **Wheel-speed aiding** | ✓ Designed | Code in place; needs VCU integration (not in critical path) |
-| **RTK support** | ⚠ Capable | RTCM corrections flow RS232-in → F9P UART1 in hardware (JP7 2‑3); firmware enables RTCM3X input at boot. Needs an external correction source on the loom |
-| **SIL harness** | ❌ Pending | Synthetic track replay for validation testing |
-
-✓ = production-ready | ⚠ = partially implemented | ❌ = not started
-
-## Compliance & standards
-
-- **CAN**: ISO 11898-1 (CAN 2.0B)
-- **GNSS**: GPS L1, Galileo E1 (u-blox standard implementations)
-- **Time**: GPS time-of-week per u-blox UBX spec
-- **IMU**: LGA package, MEMS standard operating conditions
+| Feature | Status |
+|---------|--------|
+| Lap and sector timing | Implemented, host-tested; not yet validated on track |
+| Sensor fusion (Mahony AHRS + 6-state KF) | Implemented, host-tested |
+| Gate persistence across power cycles | Implemented, host-tested (store logic); not yet validated on hardware |
+| CAN broadcast and commands | Implemented |
+| Continuous magnetometer calibration | Implemented (horizontal hard/soft iron, validated against GPS course) |
+| NMEA to MoTeC | Implemented |
+| TIM-TM2 event time-marks | Implemented |
+| Fault handling (GPS link, IMU, CAN bus-off, watchdog) | Implemented |
+| Wheel-speed aiding (front-left) | Implemented, **disabled by default** pending validation |
+| RTK | Receiver-side only; needs a correction source |
 
 ---
 
-**For complete schematic & layout, see:** [`gps-mainboard.pdf`](../gps-mainboard.pdf) (KiCad project at `/pcb/gps-mainboard/`)
+Schematic: [`gps-mainboard.pdf`](../gps-mainboard.pdf).

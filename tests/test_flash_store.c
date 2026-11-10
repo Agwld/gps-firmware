@@ -220,9 +220,191 @@ test_restore_mag_cal(void)
     CHECK_NEAR("mag-cal scale restored", restored.scale[2], 1.3f, 1e-6f);
 }
 
+/* ------------------------------------------------------------------ */
+/* A/B page selection (interrupted-compaction recovery)                */
+/* ------------------------------------------------------------------ */
+
+static uint8_t s_page0[FLASH_STORE_PAGE_SIZE];
+static uint8_t s_page1[FLASH_STORE_PAGE_SIZE];
+
+static void
+blank_pages(void)
+{
+    memset(s_page0, 0xFF, sizeof(s_page0));
+    memset(s_page1, 0xFF, sizeof(s_page1));
+}
+
+static void
+append_gate(uint8_t *page, uint8_t index)
+{
+    flash_store_record_t rec;
+    flash_store_build_gate_record(index, 509000000 + index, -13000000, 0.5f,
+                                   true, &rec);
+    append(page, &rec);
+}
+
+static void
+append_done(uint8_t *page, uint32_t generation)
+{
+    flash_store_record_t rec;
+    flash_store_build_compact_done_record(generation, &rec);
+    append(page, &rec);
+}
+
+static uint32_t
+select_page(void)
+{
+    return flash_store_select_active_page(s_page0, s_page1,
+                                           FLASH_STORE_PAGE_SIZE);
+}
+
+static void
+test_free_records_and_in_use(void)
+{
+    blank_pages();
+    CHECK("blank page: every slot free",
+          flash_store_free_records(s_page0, FLASH_STORE_PAGE_SIZE) ==
+              FLASH_STORE_MAX_RECORDS);
+    CHECK("blank page is not in use",
+          !flash_store_page_in_use(s_page0, FLASH_STORE_PAGE_SIZE));
+
+    append_gate(s_page0, 0U);
+    append_gate(s_page0, 1U);
+    CHECK("two records appended: two fewer free",
+          flash_store_free_records(s_page0, FLASH_STORE_PAGE_SIZE) ==
+              FLASH_STORE_MAX_RECORDS - 2U);
+    CHECK("page with records is in use",
+          flash_store_page_in_use(s_page0, FLASH_STORE_PAGE_SIZE));
+
+    /* Garbage that is neither blank nor CRC-valid (a half-erased page)
+     * occupies slots but doesn't make the page "in use". */
+    memset(s_page1, 0x5A, sizeof(s_page1));
+    CHECK("garbage page: no free slots",
+          flash_store_free_records(s_page1, FLASH_STORE_PAGE_SIZE) == 0U);
+    CHECK("garbage page is not in use",
+          !flash_store_page_in_use(s_page1, FLASH_STORE_PAGE_SIZE));
+}
+
+static void
+test_compact_done_marker(void)
+{
+    blank_pages();
+    uint32_t gen = 123U;
+
+    append_gate(s_page0, 0U);
+    CHECK("no marker: page has no generation",
+          !flash_store_page_generation(s_page0, FLASH_STORE_PAGE_SIZE, &gen));
+    CHECK("no marker: generation reads 0", gen == 0U);
+
+    append_done(s_page0, 7U);
+    append_gate(s_page0, 1U); /* later appends don't hide the marker */
+    CHECK("marker found",
+          flash_store_page_generation(s_page0, FLASH_STORE_PAGE_SIZE, &gen));
+    CHECK("marker generation roundtrips", gen == 7U);
+
+    /* The marker is inert to restore: gates around it still replay. */
+    flash_store_gate_t gates[FLASH_STORE_MAX_GATES];
+    mag_cal_result_t cal;
+    flash_store_restore(s_page0, FLASH_STORE_PAGE_SIZE, gates,
+                         FLASH_STORE_MAX_GATES, &cal);
+    CHECK("gate before marker restored", gates[0].valid);
+    CHECK("gate after marker restored", gates[1].valid);
+}
+
+static void
+test_select_single_page(void)
+{
+    blank_pages();
+    CHECK("first boot (both blank): page 0", select_page() == 0U);
+
+    append_gate(s_page0, 0U);
+    CHECK("only page 0 in use: page 0", select_page() == 0U);
+
+    blank_pages();
+    append_gate(s_page1, 0U);
+    append_done(s_page1, 1U);
+    CHECK("only page 1 in use: page 1", select_page() == 1U);
+}
+
+/* Reset mid-rewrite: the target holds some records but no completion
+ * marker. The complete source must win whichever page it is - the
+ * regression here is the old "both in use => page 0" rule, which picked
+ * the partial copy (and erased the good one) whenever the source was
+ * page 1. */
+static void
+test_select_interrupted_rewrite(void)
+{
+    /* Never-compacted source on page 0, partial target on page 1. */
+    blank_pages();
+    append_gate(s_page0, 0U);
+    append_gate(s_page0, 1U);
+    append_gate(s_page1, 0U);
+    CHECK("partial target on page 1: source page 0 wins",
+          select_page() == 0U);
+
+    /* Source on page 1 (itself a completed compaction), partial target
+     * on page 0. */
+    blank_pages();
+    append_gate(s_page1, 0U);
+    append_gate(s_page1, 1U);
+    append_done(s_page1, 1U);
+    append_gate(s_page1, 2U);
+    append_gate(s_page0, 0U);
+    CHECK("partial target on page 0: source page 1 wins",
+          select_page() == 1U);
+
+    /* Same again, one compaction later: source on page 0 with a marker. */
+    blank_pages();
+    append_gate(s_page0, 0U);
+    append_done(s_page0, 2U);
+    append_gate(s_page1, 0U);
+    CHECK("partial target on page 1: marked source page 0 wins",
+          select_page() == 0U);
+}
+
+/* Reset after the rewrite completed but before (or during) the erase of
+ * the old page: the target carries the next generation and must win,
+ * because the old page may be half-erased - here it has lost its newest
+ * record, so preferring it would roll the gate table back. */
+static void
+test_select_interrupted_erase(void)
+{
+    blank_pages();
+    append_gate(s_page0, 0U); /* old page, its later records erased away */
+    append_gate(s_page1, 0U);
+    append_gate(s_page1, 1U);
+    append_done(s_page1, 1U);
+    CHECK("completed target (gen 1) beats unmarked old page",
+          select_page() == 1U);
+
+    blank_pages();
+    append_gate(s_page1, 0U);
+    append_done(s_page1, 3U); /* old page */
+    append_gate(s_page0, 0U);
+    append_gate(s_page0, 1U);
+    append_done(s_page0, 4U); /* completed target */
+    CHECK("higher generation wins (page 0)", select_page() == 0U);
+
+    blank_pages();
+    append_done(s_page0, 4U);
+    append_done(s_page1, 5U);
+    CHECK("higher generation wins (page 1)", select_page() == 1U);
+
+    /* Generation counter wrap: 0 follows 0xFFFFFFFF. */
+    blank_pages();
+    append_done(s_page0, 0xFFFFFFFFU);
+    append_done(s_page1, 0U);
+    CHECK("generation comparison survives wrap", select_page() == 1U);
+}
+
 int
 main(void)
 {
+    test_free_records_and_in_use();
+    test_compact_done_marker();
+    test_select_single_page();
+    test_select_interrupted_rewrite();
+    test_select_interrupted_erase();
     test_build_and_validate_roundtrip();
     test_cleared_record_roundtrip();
     test_blank_record_is_invalid();

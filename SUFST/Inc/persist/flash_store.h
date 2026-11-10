@@ -35,6 +35,16 @@ extern "C" {
 #define FLASH_STORE_KIND_GATE           1U
 #define FLASH_STORE_KIND_MAG_CAL        2U
 #define FLASH_STORE_KIND_GATE_CLEAR_ALL 3U
+/* Written as the LAST record of a compaction, carrying a generation
+ * number one higher than the page it was compacted from. Its presence
+ * marks a page as a complete compaction target; see
+ * flash_store_select_active_page(). */
+#define FLASH_STORE_KIND_COMPACT_DONE   4U
+
+/* flash_store_init() compacts at boot (when a tens-of-ms stall bothers
+ * nobody) if fewer than this many record slots are free, so a session
+ * always starts with room for its gate edits and mag-cal updates. */
+#define FLASH_STORE_BOOT_COMPACT_FREE_RECORDS 32U
 
 typedef struct {
     /* _Alignas on the first member (C11 forbids it on the typedef itself)
@@ -85,6 +95,8 @@ void flash_store_build_gate_record(uint8_t index, int32_t lat_1e7,
 void flash_store_build_gate_clear_all_record(flash_store_record_t *out);
 void flash_store_build_mag_cal_record(const mag_cal_result_t *cal,
                                        flash_store_record_t *out);
+void flash_store_build_compact_done_record(uint32_t generation,
+                                            flash_store_record_t *out);
 
 /** @brief CRC-valid and not a blank (all-0xFF, i.e. erased/unwritten)
  *         slot. */
@@ -104,6 +116,49 @@ bool flash_store_decode_mag_cal(const flash_store_record_t *rec,
  */
 uint32_t flash_store_find_next_slot(const uint8_t *page,
                                      uint32_t page_size);
+
+/** @brief Number of blank (still appendable) record slots left in a page
+ *         buffer. */
+uint32_t flash_store_free_records(const uint8_t *page, uint32_t page_size);
+
+/** @brief True if a page buffer holds at least one CRC-valid record, i.e.
+ *         it has been written to since it was last erased. */
+bool flash_store_page_in_use(const uint8_t *page, uint32_t page_size);
+
+/**
+ * @brief Generation of a page: the value carried by its
+ *        KIND_COMPACT_DONE marker.
+ * @return true and *generation if the page holds a valid marker; false
+ *         (generation 0) for a page that was never the target of a
+ *         completed compaction.
+ */
+bool flash_store_page_generation(const uint8_t *page, uint32_t page_size,
+                                  uint32_t *generation);
+
+/**
+ * @brief Decide which of the two A/B pages is the authoritative one.
+ *
+ * Normally only one page is in use. Both are in use only if a reset
+ * interrupted flash_store_erase_and_compact(), and the two possible
+ * interruption points need opposite answers:
+ *
+ *  - mid-rewrite: the target is partial and the source is still complete,
+ *    so the SOURCE must win. A partial target never has a COMPACT_DONE
+ *    marker (it is written last).
+ *  - after the rewrite, before/during the erase of the source: the target
+ *    is complete and the source may be partially erased, so the TARGET
+ *    must win. It has a marker one generation above the source's.
+ *
+ * Hence: the page with a marker beats one without; of two markers the
+ * higher generation wins; with no marker on either, page 0 wins (a store
+ * that has never been compacted lives on page 0, so page 1 can only be
+ * its partial target).
+ *
+ * @return 0 or 1.
+ */
+uint32_t flash_store_select_active_page(const uint8_t *page0,
+                                         const uint8_t *page1,
+                                         uint32_t page_size);
 
 /**
  * @brief Replay every valid record in a page buffer (append-order, so a
@@ -128,14 +183,23 @@ void flash_store_restore(const uint8_t *page, uint32_t page_size,
                           mag_cal_result_t *mag_cal_out);
 
 #ifndef HOST_TEST_BUILD
-/** @brief Scan the real flash page and restore the gate table + mag-cal.
- *         Call once at boot. */
+/*
+ * Target-only flash access. NOT thread-safe, by design: every function
+ * below must be called from one task only (imu_task). A program or erase
+ * preempted by another task's flash call would both corrupt the HAL flash
+ * driver's state and lose records appended to a page mid-compaction.
+ */
+
+/** @brief Pick the active page (finishing an interrupted compaction),
+ *         compact it if it is filling up, and restore the gate table +
+ *         mag-cal. Call once at boot. */
 void flash_store_init(flash_store_gate_t *gates_out, uint32_t gates_max,
                       mag_cal_result_t *mag_cal_out);
 
 /** @brief Append a gate SET record (absolute lat/lon). STATUS_FULL if the
- *         page has no free slot - caller should flash_store_erase_and_
- *         compact() (only when safe - e.g. car stationary) and retry. */
+ *         page has no free slot - the record is NOT stored; the caller
+ *         should flash_store_erase_and_compact() (only when safe - e.g.
+ *         car stationary) and then re-save its current state. */
 status_t flash_store_save_gate(uint8_t index, int32_t lat_1e7,
                                int32_t lon_1e7, float heading_rad);
 /** @brief Append a persisted "gate cleared" marker for one slot. */

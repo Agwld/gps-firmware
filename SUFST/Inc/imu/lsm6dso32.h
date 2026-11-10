@@ -26,10 +26,12 @@
  * continuous conversion, before configuring SLV0 for the continuous read
  * - each write is followed by AN5192's mandated disable-master +
  * >=300 us settle before the next FUNC_CFG_ACCESS/MASTER_CONFIG touch.
- * It is otherwise a one-shot call (never re-run to reconfigure an
- * already-continuously-reading sensor hub); if a retry-after-fault path
- * is ever added that re-runs the final continuous-read setup alone,
- * that specific step still needs the same disable/settle treatment.
+ * It must only ever run against a disabled sensor hub, never one that is
+ * already reading continuously. lsm6dso32_init() guarantees that by
+ * software-resetting the sensor first, so the pair init() + mag_init()
+ * is safe to repeat at any time - after a warm MCU reset (the sensor
+ * stays powered and configured across one) and from imu_task's recovery
+ * path alike. Don't call mag_init() on its own.
  * Still worth a logic analyzer trace of the IIS2MDC actually responding
  * before trusting mag data on the bench, as with any first bring-up.
  */
@@ -61,12 +63,27 @@ typedef struct {
 } lsm6dso32_mag_sample_t;
 
 /**
- * @brief Probe WHO_AM_I and configure the accel/gyro at the ODR/FS in
- *        board_config.h (BDU on, so a read always returns a consistent
- *        accel+gyro pair even if it races the sensor's own update).
+ * @brief Probe WHO_AM_I, software-reset the sensor, then configure the
+ *        accel/gyro at the ODR/FS in board_config.h (BDU on, so a read
+ *        always returns a consistent accel+gyro pair even if it races the
+ *        sensor's own update) and route data-ready to INT1. Must be
+ *        called from a FreeRTOS task (it delays while the reset runs).
  * @return STATUS_OK, or STATUS_TIMEOUT if WHO_AM_I didn't match.
  */
 status_t lsm6dso32_init(void);
+
+/**
+ * @brief Check that the accel/gyro still hold the configuration
+ *        lsm6dso32_init() wrote (reads CTRL1_XL back).
+ *
+ * A sensor that browned out or reset on its own answers SPI happily but
+ * has fallen back to power-down, so reads keep "succeeding" with a dead
+ * sample; this is the cheap way to notice. Same task-blocking DMA read as
+ * lsm6dso32_read().
+ *
+ * @return true if the sensor answers and is still configured.
+ */
+bool lsm6dso32_is_configured(void);
 
 /** @brief Bring up the sensor-hub I2C master and configure it to poll
  *         the IIS2MDC magnetometer (I2C address 0x1E) once per

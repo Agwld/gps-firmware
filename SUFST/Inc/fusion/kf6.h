@@ -24,6 +24,7 @@
 #ifndef KF6_H
 #define KF6_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "fusion/ahrs.h"
@@ -69,8 +70,19 @@ void kf6_predict(uint32_t tick, float ax, float ay, float az, quat_t q,
  * @param e_m, n_m, u_m   fix position, ENU metres.
  * @param sigma_pos_m     1-sigma position measurement noise, metres
  *                        (isotropic across all three axes).
+ *
+ * A fix that is statistically inconsistent with the filter's own
+ * uncertainty is rejected as an outlier. If that happens on many
+ * consecutive fixes the filter concludes it is the one that has diverged
+ * (e.g. dead reckoning through a GPS outage), re-opens its covariance and
+ * snaps back onto GPS.
+ *
+ * @return true if this call performed such a re-initialisation, i.e. the
+ *         position state just jumped discontinuously - a caller deriving
+ *         anything from consecutive positions (gate crossings) must not
+ *         pair the sample after this call with the one before it.
  */
-void kf6_correct_pos(uint32_t fix_tick, float e_m, float n_m, float u_m,
+bool kf6_correct_pos(uint32_t fix_tick, float e_m, float n_m, float u_m,
                       float sigma_pos_m);
 
 /**

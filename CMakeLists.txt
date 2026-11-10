@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(gps-firmware C ASM)
+# The version here is the firmware's release version: it is embedded in
+# the image (see k_fw_version in Core/Src/main.c) and should be bumped,
+# with a CHANGELOG.md entry, for every release.
+project(gps-firmware VERSION 1.0.0 LANGUAGES C ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -27,9 +30,11 @@ add_compile_definitions(
     USE_HAL_DRIVER
     STM32G431xx
     GPS_FLASH_TOTAL_KB=${GPS_FLASH_TOTAL_KB}
+    GPS_FW_VERSION="${PROJECT_VERSION}"
 )
 
-message(STATUS "STM32G431CB: ${GPS_FLASH_TOTAL_KB} KB flash, linker: ${GPS_LINKER_SCRIPT}")
+message(STATUS "gps-firmware v${PROJECT_VERSION} for STM32G431CB: "
+               "${GPS_FLASH_TOTAL_KB} KB flash, linker: ${GPS_LINKER_SCRIPT}")
 
 # --- CMSIS + device startup ------------------------------------------------
 
@@ -42,6 +47,8 @@ set(STARTUP_SOURCE ${DEVICE_DIR}/Source/Templates/gcc/startup_stm32g431xx.s)
 
 set(HAL_SOURCES
     Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc.c
+    Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_adc_ex.c
     Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_cortex.c
     Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_dma.c
     Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_fdcan.c
@@ -81,14 +88,19 @@ set(FREERTOS_SOURCES
 )
 
 # --- Core (CubeMX-style application glue) -----------------------------------
-# Populated incrementally as Core/Src files are added (step 8+).
 
-file(GLOB CORE_SOURCES ${CMAKE_SOURCE_DIR}/Core/Src/*.c)
+file(GLOB CORE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Core/Src/*.c)
 
 # --- SUFST application modules -----------------------------------------------
-# Populated incrementally; each module directory owns its own sources.
+# Each module directory owns its own sources.
 
-file(GLOB_RECURSE SUFST_SOURCES ${CMAKE_SOURCE_DIR}/SUFST/Src/*.c)
+file(GLOB_RECURSE SUFST_SOURCES CONFIGURE_DEPENDS
+     ${CMAKE_SOURCE_DIR}/SUFST/Src/*.c)
+
+# Project-owned code builds with -Wextra on top of the toolchain file's
+# -Wall; the vendor HAL/FreeRTOS sources are left at -Wall only.
+set_source_files_properties(${CORE_SOURCES} ${SUFST_SOURCES}
+                            PROPERTIES COMPILE_OPTIONS "-Wextra")
 
 add_executable(${PROJECT_NAME}
     ${STARTUP_SOURCE}

@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -314,8 +315,181 @@ static void test_final_sector_timed_on_lap(void)
     assert(err < 30.0f);
 }
 
+/* Drive the standard circle for `laps` laps from the start/finish line,
+ * calling `on_sample` (if non-NULL) with laptimer_update()'s event mask
+ * for every sample. Leaves the gates as the caller set them. */
+static void drive_circle(float laps, void (*on_sample)(uint8_t events))
+{
+    float omega = SPEED_MPS / CIRCLE_RADIUS_M;
+    float total_time_s = (ground_truth_lap_ms() / 1000.0f) * laps;
+    uint32_t nsamples = (uint32_t) (total_time_s / SAMPLE_DT_S) + 1U;
+    uint32_t itow0_ms = 200000U;
+
+    float prev_east = CIRCLE_RADIUS_M;
+    float prev_north = 0.0f;
+    uint32_t prev_itow_ms = itow0_ms;
+
+    for (uint32_t i = 1U; i <= nsamples; i++) {
+        float t = (float) i * SAMPLE_DT_S;
+        float sin_t, cos_t;
+        test_sincosf(omega * t, &sin_t, &cos_t);
+        float east = CIRCLE_RADIUS_M * cos_t;
+        float north = CIRCLE_RADIUS_M * sin_t;
+        uint32_t itow_ms = itow0_ms + (uint32_t) (t * 1000.0f + 0.5f);
+
+        uint8_t events = laptimer_update(east, north, prev_east, prev_north,
+                                          itow_ms, prev_itow_ms);
+        if (on_sample != NULL) {
+            on_sample(events);
+        }
+
+        prev_east = east;
+        prev_north = north;
+        prev_itow_ms = itow_ms;
+    }
+}
+
+static uint32_t s_lap_events;
+static uint32_t s_sector_events;
+static uint32_t s_sector_events_with_lap; /* SECTOR and LAP in one sample */
+
+static void count_events(uint8_t events)
+{
+    if ((events & LAPTIMER_EVT_LAP) != 0U) {
+        s_lap_events++;
+    }
+    if ((events & LAPTIMER_EVT_SECTOR) != 0U) {
+        s_sector_events++;
+        if ((events & LAPTIMER_EVT_LAP) != 0U) {
+            s_sector_events_with_lap++;
+        }
+    }
+}
+
+static void reset_event_counts(void)
+{
+    s_lap_events = 0U;
+    s_sector_events = 0U;
+    s_sector_events_with_lap = 0U;
+}
+
+static void test_update_reports_events(void)
+{
+    /* One sector gate at the half-way point, 2.2 laps: the event mask
+     * must report exactly 2 laps and 4 sectors - each lap's mid-lap
+     * sector, plus its final sector (sector gate -> finish), which
+     * completes in the same sample as the lap itself. */
+    laptimer_init();
+    gates_init();
+    assert(gates_set(0U, CIRCLE_RADIUS_M, 0.0f, PI_F / 2.0f) == STATUS_OK);
+    assert(gates_set(1U, -CIRCLE_RADIUS_M, 0.0f, -PI_F / 2.0f) == STATUS_OK);
+
+    reset_event_counts();
+    drive_circle(2.2f, count_events);
+
+    printf("events over 2.2 laps: %u lap, %u sector (%u with a lap)\n",
+           s_lap_events, s_sector_events, s_sector_events_with_lap);
+    assert(s_lap_events == 2U);
+    assert(s_sector_events == 4U);
+    assert(s_sector_events_with_lap == 2U);
+    assert(laptimer_get_lap_count() == 2U);
+}
+
+static void test_no_sector_event_without_sector_gates(void)
+{
+    /* With only a start/finish line the "final sector" of a lap is the
+     * lap itself - completing a lap must not also report a sector. */
+    laptimer_init();
+    gates_init();
+    assert(gates_set(0U, CIRCLE_RADIUS_M, 0.0f, PI_F / 2.0f) == STATUS_OK);
+
+    reset_event_counts();
+    drive_circle(2.2f, count_events);
+
+    assert(s_lap_events == 2U);
+    assert(s_sector_events == 0U);
+}
+
+static void test_sector_gate_counts_once_per_lap(void)
+{
+    /* Cross a sector gate, back up over it, and cross it again within
+     * the same lap (jitter while crawling over the line does the same):
+     * the second forward crossing must not register, or every later
+     * sector number that lap would be off by one. */
+    laptimer_init();
+    gates_init();
+    /* Start/finish at the origin heading east; sector gate 20 m further
+     * on, same heading. */
+    assert(gates_set(0U, 0.0f, 0.0f, 0.0f) == STATUS_OK);
+    assert(gates_set(1U, 20.0f, 0.0f, 0.0f) == STATUS_OK);
+
+    uint32_t t = 1000U;
+    uint8_t ev;
+
+    ev = laptimer_update(1.0f, 0.0f, -1.0f, 0.0f, t + 10U, t); /* start */
+    assert(laptimer_is_running());
+    assert(ev == 0U); /* starting the first lap completes nothing */
+
+    t += 2000U;
+    ev = laptimer_update(21.0f, 0.0f, 19.0f, 0.0f, t + 10U, t); /* sector */
+    assert((ev & LAPTIMER_EVT_SECTOR) != 0U);
+    assert(laptimer_get_current_sector() == 1U);
+
+    t += 500U;
+    ev = laptimer_update(19.0f, 0.0f, 21.0f, 0.0f, t + 10U, t); /* reverse */
+    assert(ev == 0U);
+
+    t += 500U;
+    ev = laptimer_update(21.0f, 0.0f, 19.0f, 0.0f, t + 10U, t); /* again */
+    assert(ev == 0U);
+    assert(laptimer_get_current_sector() == 1U);
+
+    /* A new lap re-arms the gate. */
+    t += 20000U;
+    ev = laptimer_update(1.0f, 0.0f, -1.0f, 0.0f, t + 10U, t); /* finish */
+    assert((ev & LAPTIMER_EVT_LAP) != 0U);
+    assert(laptimer_get_current_sector() == 0U);
+
+    t += 2000U;
+    ev = laptimer_update(21.0f, 0.0f, 19.0f, 0.0f, t + 10U, t);
+    assert((ev & LAPTIMER_EVT_SECTOR) != 0U);
+    assert(laptimer_get_current_sector() == 1U);
+}
+
+static void test_init_restarts_timing(void)
+{
+    /* laptimer_init() is what the firmware calls when the start/finish
+     * line is moved or removed: the lap in progress and the lap count
+     * must both go, and the next crossing starts a fresh first lap. */
+    laptimer_init();
+    gates_init();
+    assert(gates_set(0U, 0.0f, 0.0f, 0.0f) == STATUS_OK);
+
+    uint32_t t = 5000U;
+    (void) laptimer_update(1.0f, 0.0f, -1.0f, 0.0f, t + 10U, t);
+    t += 30000U;
+    uint8_t ev = laptimer_update(1.0f, 0.0f, -1.0f, 0.0f, t + 10U, t);
+    assert((ev & LAPTIMER_EVT_LAP) != 0U);
+    assert(laptimer_get_lap_count() == 1U);
+
+    laptimer_init();
+    assert(!laptimer_is_running());
+    assert(laptimer_get_lap_count() == 0U);
+    assert(laptimer_get_current_elapsed_ms(t + 1000U) == 0U);
+
+    t += 3000U; /* well inside the old lap's debounce window */
+    ev = laptimer_update(1.0f, 0.0f, -1.0f, 0.0f, t + 10U, t);
+    assert(ev == 0U);
+    assert(laptimer_is_running());
+    assert(laptimer_get_lap_count() == 0U);
+}
+
 int main(void)
 {
+    test_update_reports_events();
+    test_no_sector_event_without_sector_gates();
+    test_sector_gate_counts_once_per_lap();
+    test_init_restarts_timing();
     test_circle_replay_lap_times();
     test_sector_gate_within_lap();
     test_final_sector_timed_on_lap();

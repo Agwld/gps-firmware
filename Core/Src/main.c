@@ -12,6 +12,12 @@
 
 IWDG_HandleTypeDef hiwdg;
 
+/* Build identification: lets a .bin/.hex or a flash dump be matched to a
+ * release (`strings gps-firmware.bin | grep gps-firmware`). Nothing in
+ * the code reads it, so it is pinned with KEEP() in the linker script. */
+__attribute__((used, section(".fw_version")))
+static const char k_fw_version[] = "SUFST gps-firmware v" GPS_FW_VERSION;
+
 void SystemClock_Config(void);
 
 extern void MX_GPIO_Init(void);
@@ -22,6 +28,7 @@ extern void MX_SPI1_Init(void);
 extern void MX_I2C2_Init(void);
 extern void MX_FDCAN1_Init(void);
 extern void MX_TIM3_Init(void);
+extern void MX_ADC1_Init(void);
 
 int main(void)
 {
@@ -36,6 +43,7 @@ int main(void)
     MX_I2C2_Init();
     MX_FDCAN1_Init();
     MX_TIM3_Init();
+    MX_ADC1_Init();
 
     /* Start the independent watchdog here, before the scheduler, so the
      * whole task-boot window is covered: once running, the IWDG resets

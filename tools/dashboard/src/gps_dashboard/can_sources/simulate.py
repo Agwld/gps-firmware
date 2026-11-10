@@ -32,6 +32,7 @@ from gps_dashboard.raw_frame import RawFrame
 _CMD_GATE_SET = 0x01
 _CMD_GATE_CLEAR = 0x02
 _GATE_CLEAR_ALL = 0xFF
+_GATE_SLOT_NEXT_SECTOR = 0xFE
 
 #: Lap_Event.type values (see CAN_LAP_EVENT_* in can_defs.h).
 _LAP_EVENT_LAP = 0
@@ -348,13 +349,25 @@ class SimulateCanSource(CanSource):
             cmd = int(decoded.signals["cmd"])
             arg0 = int(decoded.signals["arg0"])
 
+            if cmd == _CMD_GATE_SET and arg0 == _GATE_SLOT_NEXT_SECTOR:
+                # First free sector slot, else the last (as the node does).
+                arg0 = next(
+                    (
+                        i
+                        for i in range(1, _MAX_GATE_SLOTS)
+                        if not self._gates[i]["valid"]
+                    ),
+                    _MAX_GATE_SLOTS - 1,
+                )
             if cmd == _CMD_GATE_SET and arg0 < _MAX_GATE_SLOTS:
                 self._place_gate(arg0, dist_m)
                 if arg0 == 0:
-                    # A new start/finish wipes the sectors and restarts the
-                    # timing reference here (mirrors gates.c + a clean lap).
+                    # A new start/finish wipes the sectors and restarts
+                    # timing from here, lap count included (as the node
+                    # does).
                     for i in range(1, _MAX_GATE_SLOTS):
                         self._gates[i]["valid"] = 0.0
+                    self._lap_count = 0
                     self._running = True
                     self._lap_start_t = t
                     self._sector_start_t = t
@@ -497,7 +510,11 @@ class SimulateCanSource(CanSource):
                         "lap": self._lap_count,
                         "running_time_ms": running_time_ms,
                         "sector": self._current_sector,
-                        "flags": 0x01 if self._running else 0x00,
+                        # CAN_LAP_FLAG_RUNNING | CAN_LAP_FLAG_ARMED, as the
+                        # node reports them (never DEGRADED: the sim always
+                        # has a fix and a time lock).
+                        "flags": (0x01 if self._running else 0x00)
+                        | (0x02 if self._gates[0]["valid"] else 0x00),
                     }
                 else:
                     signals = self._build_signals(
@@ -560,7 +577,9 @@ class SimulateCanSource(CanSource):
                 "yaw_deg": heading_deg,
                 "pitch_deg": 0.0,
                 "roll_deg": 0.0,
-                "fusion_status": 0,
+                # CAN_FUSION_STATUS_*: IMU, mag, mag-cal, origin,
+                # GPS-aided and time-locked all healthy.
+                "fusion_status": 0x3F,
                 "counter": counter,
             }
         if name == "GPS_Quality":

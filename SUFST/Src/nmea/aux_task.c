@@ -8,6 +8,9 @@
  * so no lock is needed. Both directions necessarily share one baud
  * (GPS_UART_BAUD), since a USART has a single baud-rate register.
  *
+ * Each cycle's GGA + RMC + VTG go out as one DMA transfer, so the ~16 ms
+ * they take on the wire costs no CPU time.
+ *
  * RTCM corrections never pass through here (or the MCU at all): the
  * RS232 input is routed straight to the F9P's UART1 RX in hardware
  * (JP7 bridged 2-3).
@@ -27,6 +30,13 @@
 #include "nmea/nmea_out.h"
 #include "sys/app.h"
 
+#define NMEA_SENTENCE_MAX   96U
+#define NMEA_SENTENCES      3U /* GGA, RMC, VTG */
+
+/* DMA source buffer: file-scope so it outlives the call that starts the
+ * transfer, and lives in ordinary SRAM (the DMA can't reach CCM RAM). */
+static uint8_t s_tx_buf[NMEA_SENTENCE_MAX * NMEA_SENTENCES];
+
 void
 aux_task_main(void *argument)
 {
@@ -42,34 +52,50 @@ aux_task_main(void *argument)
         while (xQueueReceive(g_nmea_cfg_queue, &cfg, 0) == pdTRUE) {
             if (cfg.cmd == CAN_CMD_NMEA_CFG) {
                 if (cfg.arg0 > 0U) {
-                    rate_hz = cfg.arg0;
+                    /* Faster than the fix rate would only repeat fixes
+                     * (and outrun the baud rate). */
+                    rate_hz = (cfg.arg0 > NMEA_OUT_RATE_MAX_HZ)
+                                  ? NMEA_OUT_RATE_MAX_HZ
+                                  : cfg.arg0;
                 }
                 enabled = (cfg.arg1 != 0U);
             }
         }
 
-        if (enabled) {
-            ubx_nav_pvt_t pvt;
-            if (xQueuePeek(g_gps_pvt_queue_nmea, &pvt, 0) == pdTRUE) {
-                char line[96];
-                size_t len;
+        /* Take (not peek) the newest NAV-PVT: each one is reported at
+         * most once, so if the receiver stops talking the output stops
+         * with it instead of replaying the last position as current.
+         * Fix-less solutions are forwarded too and go out flagged invalid
+         * (GGA quality 0, RMC status V), which is what a logger expects
+         * to see during a loss of fix. Drained even while disabled, so
+         * re-enabling can't start with a stale one. */
+        ubx_nav_pvt_t pvt;
+        bool have_pvt = xQueueReceive(g_gps_pvt_queue_nmea, &pvt, 0) == pdTRUE;
 
-                len = nmea_format_gga(&pvt, line, sizeof(line));
-                if (len > 0U) {
-                    HAL_UART_Transmit(&huart3, (uint8_t *) line, len, 50U);
-                }
-                len = nmea_format_rmc(&pvt, line, sizeof(line));
-                if (len > 0U) {
-                    HAL_UART_Transmit(&huart3, (uint8_t *) line, len, 50U);
-                }
-                len = nmea_format_vtg(&pvt, line, sizeof(line));
-                if (len > 0U) {
-                    HAL_UART_Transmit(&huart3, (uint8_t *) line, len, 50U);
-                }
+        /* gState is READY again once the previous cycle's transfer has
+         * fully left the UART; until then the buffer is still being read
+         * by the DMA and must not be rewritten. */
+        if (enabled && have_pvt &&
+            huart3.gState == HAL_UART_STATE_READY) {
+            char *p = (char *) s_tx_buf;
+            size_t room = sizeof(s_tx_buf);
+            size_t len;
+
+            len = nmea_format_gga(&pvt, p, room);
+            p += len;
+            room -= len;
+            len = nmea_format_rmc(&pvt, p, room);
+            p += len;
+            room -= len;
+            len = nmea_format_vtg(&pvt, p, room);
+            p += len;
+
+            uint16_t total = (uint16_t) (p - (char *) s_tx_buf);
+            if (total > 0U) {
+                (void) HAL_UART_Transmit_DMA(&huart3, s_tx_buf, total);
             }
         }
 
-        uint32_t period_ms = 1000U / rate_hz;
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(period_ms));
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000U / rate_hz));
     }
 }

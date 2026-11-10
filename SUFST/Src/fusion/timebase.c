@@ -185,29 +185,38 @@ timebase_take_pending_pps(uint32_t *tick_at_pps)
  * timebase.h. */
 static volatile uint16_t s_tick_high;
 
+/* A counter/capture value in the lower half of the 16-bit range, seen
+ * while a rollover is latched but not yet counted into s_tick_high, was
+ * taken AFTER that rollover and so belongs to the next high word; one in
+ * the upper half was taken before it. Unambiguous as long as the pending
+ * rollover is serviced within half a period (~32 ms), which every caller
+ * and the ISR itself comfortably are. */
+#define TIMEBASE_LOW_HALF 0x8000U
+
 void
 timebase_tim3_irq(void)
 {
-    if (LL_TIM_IsActiveFlag_UPDATE(TIM3)) {
-        LL_TIM_ClearFlag_UPDATE(TIM3);
-        s_tick_high++;
-    }
-
+    /* The capture is serviced BEFORE the rollover is counted, and
+     * attributed using the rule above: a PPS edge and a rollover that
+     * land within one ISR latency of each other (either order) would
+     * otherwise be paired with the wrong high word, putting that second's
+     * PPS observation - and every lap/sector time interpolated from it -
+     * out by one 65.5 ms period. */
     if (LL_TIM_IsActiveFlag_CC2(TIM3)) {
         LL_TIM_ClearFlag_CC2(TIM3);
 
-        /* Note: if the PPS edge lands within the last handful of
-         * microseconds before a rollover, the update flag may already
-         * be latched (and processed above, incrementing s_tick_high)
-         * before this capture is read, misattributing the edge to the
-         * new period and off by one rollover (~65 ms). At most one such
-         * PPS observation in ~18 hours (1-in-65536 chance per edge) -
-         * timebase_on_pps()'s two-point rate estimate treats a bad
-         * point as an outlier for one cycle, not worth extra register
-         * gymnastics to close entirely. */
         uint16_t capture = (uint16_t) LL_TIM_IC_GetCaptureCH2(TIM3);
-        s_pending_pps_tick = ((uint32_t) s_tick_high << 16) | capture;
+        uint16_t high = s_tick_high;
+        if (LL_TIM_IsActiveFlag_UPDATE(TIM3) && capture < TIMEBASE_LOW_HALF) {
+            high++;
+        }
+        s_pending_pps_tick = ((uint32_t) high << 16) | capture;
         s_pps_pending = true;
+    }
+
+    if (LL_TIM_IsActiveFlag_UPDATE(TIM3)) {
+        LL_TIM_ClearFlag_UPDATE(TIM3);
+        s_tick_high++;
     }
 }
 
@@ -215,16 +224,25 @@ uint32_t
 timebase_get_tick(void)
 {
     uint16_t high1, high2, low;
+    bool rollover_pending;
 
-    /* Retry until a read isn't split by a rollover landing between the
-     * high-word and low-word reads (timebase_tim3_irq() runs at a higher
-     * priority than any caller of this function, so it can only ever
-     * happen between these two lines, not concurrently with them). */
+    /* Retry until a read isn't split by timebase_tim3_irq() counting a
+     * rollover between the high-word and low-word reads. */
     do {
         high1 = s_tick_high;
         low = (uint16_t) LL_TIM_GetCounter(TIM3);
+        rollover_pending = LL_TIM_IsActiveFlag_UPDATE(TIM3) != 0U;
         high2 = s_tick_high;
     } while (high1 != high2);
+
+    /* The ISR can't always run between those reads: the kernel masks it
+     * (BASEPRI) while it samples this as the run-time-stats clock inside
+     * a context switch, and any caller in a critical section does the
+     * same. A rollover that is latched but not yet counted is folded in
+     * here instead, so the tick never steps back by a whole period. */
+    if (rollover_pending && low < TIMEBASE_LOW_HALF) {
+        high2++;
+    }
 
     return ((uint32_t) high2 << 16) | low;
 }

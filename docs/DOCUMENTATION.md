@@ -11,13 +11,13 @@ Quick reference for finding the right document.
 → **[QUICK_START.md](QUICK_START.md)** has toolchain install, CMake presets, build commands
 
 ### I'm a developer and want to work on the firmware
-→ **[DEVELOPER.md](DEVELOPER.md)** covers environment setup, build system, testing, debugging, CI, code style
+→ **[DEVELOPER.md](DEVELOPER.md)** covers environment setup, build system, testing, flashing, bring-up, debugging, code style
 
 ### I need to understand how the system works
 → **[ARCHITECTURE.md](ARCHITECTURE.md)** explains sensor fusion, lap timing, CAN broadcast, task architecture, persistence
 
 ### I need hardware specs, pinouts, CAN signals, memory layout
-→ **[DATASHEET.md](DATASHEET.md)** has all component specs, electrical characteristics, CAN matrix, signal scaling
+→ **[DATASHEET.md](DATASHEET.md)** has component specs, pinouts, CAN matrix and status bits, memory figures
 
 ### I want to know why certain design choices were made
 → **[NOTES.md](NOTES.md)** covers design rationale, known limitations, future enhancements, performance profiling
@@ -51,7 +51,8 @@ This file (DOCUMENTATION.md) ←────────────────
 | "What's the CAN matrix?" | DATASHEET | CAN message matrix |
 | "What are the MCU specs?" | DATASHEET | Microcontroller |
 | "Why absolute lat/lon for gates?" | NOTES | Absolute lat/lon for gate storage |
-| "What about RTK support?" | NOTES | Limited RTK support |
+| "What about RTK support?" | NOTES | RTK ready in hardware |
+| "What changed in this release?" | CHANGELOG (repo root) | — |
 | "How do I debug on hardware?" | DEVELOPER | Debugging |
 | "What are the test commands?" | DEVELOPER | Testing |
 | "How do gates persist?" | ARCHITECTURE | Gate persistence |
@@ -77,16 +78,17 @@ pandoc README.md -o README.pdf --pdf-engine=xhtml2pdf
 
 ## Updates and maintenance
 
-- **README**: Update when product status changes (e.g., "pending testing" → "production-ready")
+- **README**: Update when product status changes (e.g. once validated on hardware)
+- **CHANGELOG**: An entry for every release, with the version bumped in `CMakeLists.txt`
 - **QUICK_START**: Update when build presets or toolchain requirements change
 - **DEVELOPER**: Update when adding new tests, build features, or development workflows
 - **DRIVER_GUIDE**: Update when button FSM changes or new features affect drivers
-- **ARCHITECTURE**: Stable; rarely changes (core design frozen)
-- **DATASHEET**: Update when hardware specs change (firmware memory, CAN rates, electrical characteristics)
+- **ARCHITECTURE**: Update when task ownership, fusion, timing or persistence behaviour changes
+- **DATASHEET**: Update when pins, CAN messages, rates or memory figures change (`tools/GPS.dbc` is the authority for CAN)
 - **NOTES**: Update as new decisions are made and future enhancements are planned
 
 ---
 
 **Lost? Start with [README.md](../README.md).**
 
-*Last updated: 2026-07-05*
+*Last updated: 2026-11-10 (v1.0.0)*

@@ -23,6 +23,7 @@
 #define REG_OUTX_L_G        0x22U
 #define REG_OUTX_L_A        0x28U
 #define REG_WHO_AM_I        0x0FU
+#define REG_INT1_CTRL       0x0DU
 #define REG_CTRL1_XL        0x10U
 #define REG_CTRL2_G         0x11U
 #define REG_CTRL3_C         0x12U
@@ -30,6 +31,16 @@
                                    * (7 bytes total, see lsm6dso32_mag_init) */
 
 #define WHO_AM_I_VALUE 0x6CU
+
+/* CTRL1_XL = 0x4C: ODR[3:0]=0100 (104 Hz), FS[1:0]=11 (+-16 g, matching
+ * board_config.h's IMU_ACCEL_FS_G), LPF2_XL_EN=0 (first digital filter
+ * stage, not LPF2). +-16 g, not +-32 g - the DSO32's extended range isn't
+ * used here; verified bit-by-bit against the LSM6DSO32 datasheet
+ * CTRL1_XL/Table 44/45 encoding. */
+#define CTRL1_XL_VALUE 0x4CU
+/* CTRL2_G = 0x4C: ODR[3:0]=0100 (104 Hz), FS[1:0]=11 (+-2000 dps,
+ * matching IMU_GYRO_FS_DPS), FS_125=0. */
+#define CTRL2_G_VALUE  0x4CU
 
 /* FUNC_CFG_ACCESS bits */
 #define FUNC_CFG_SHUB_REG_ACCESS (1U << 6)
@@ -101,12 +112,39 @@
  * this is a full-register write, not read-modify-write, so it must be
  * set explicitly here too or the burst reads below silently re-read
  * OUT_TEMP_L 14/6 times instead of walking the register map). */
-#define CTRL3_C_BDU    (1U << 6)
-#define CTRL3_C_IF_INC (1U << 2)
+#define CTRL3_C_BDU      (1U << 6)
+#define CTRL3_C_IF_INC   (1U << 2)
+#define CTRL3_C_SW_RESET (1U << 0)
 
+/* The reset completes in well under a millisecond; this only bounds a
+ * sensor that never reports it done. */
+#define SW_RESET_POLL_MAX_ITERS 10U
+
+/* INT1_CTRL: INT1_DRDY_G (bit1) routes the gyro data-ready to the INT1
+ * pin. Accel and gyro run at the same ODR and so update together; the
+ * gyro is the later of the two to produce valid data after power-up,
+ * making it the one to wait on. The signal is a level (default latched
+ * mode) that drops when the outputs are read - lsm6dso32_read() reads
+ * the whole temp/gyro/accel block every cycle - and CTRL3_C leaves the
+ * pin push-pull, active high, matching the rising-edge EXTI on PC15. */
+#define INT1_CTRL_DRDY_G (1U << 1)
+
+/* Sensitivities, LSM6DSO32 datasheet Table 2 (LA_So / G_So).
+ *
+ * Accel at +-16 g: 0.488 mg/LSB, which is exactly FS / 32768.
+ *
+ * Gyro at +-2000 dps: 70 mdps/LSB - NOT FS / 32768 (61.04 mdps/LSB). ST
+ * gyros leave headroom above the nominal full scale (32767 LSB is
+ * ~2294 dps), so deriving the scale from the FS label under-reads every
+ * rate by 12.8 % and the AHRS integrates too little rotation through
+ * every corner. The table value must be used directly. */
 #define IMU_ACCEL_SENSITIVITY_G_PER_LSB (IMU_ACCEL_FS_G / 32768.0f)
-#define IMU_GYRO_SENSITIVITY_DPS_PER_LSB (IMU_GYRO_FS_DPS / 32768.0f)
+#define IMU_GYRO_SENSITIVITY_DPS_PER_LSB 0.070f
 #define IIS2MDC_SENSITIVITY_UT_PER_LSB 0.15f /* datasheet: 1.5 mG/LSB */
+
+#if IMU_GYRO_FS_DPS != 2000U || IMU_ACCEL_FS_G != 16U
+#error "CTRL1_XL/CTRL2_G values and the sensitivities above are for +-16 g / +-2000 dps"
+#endif
 
 /* Largest single burst is the 14-byte accel/gyro read plus its leading
  * address byte. */
@@ -234,6 +272,30 @@ HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
     }
 }
 
+/* Software reset (CTRL3_C.SW_RESET): returns every register - main bank
+ * and sensor-hub bank - to its power-on default, which also stops the hub
+ * master. The bit self-clears when the reset has finished (tens of
+ * microseconds); poll for that rather than assume it. SPI stays usable
+ * throughout: the defaults are 4-wire with address auto-increment. */
+static status_t
+soft_reset(void)
+{
+    if (write_reg(REG_CTRL3_C, CTRL3_C_SW_RESET) != STATUS_OK) {
+        return STATUS_ERROR;
+    }
+
+    for (uint32_t i = 0U; i < SW_RESET_POLL_MAX_ITERS; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1U));
+
+        uint8_t ctrl3_c = CTRL3_C_SW_RESET;
+        if (read_regs(REG_CTRL3_C, &ctrl3_c, 1U) == STATUS_OK &&
+            (ctrl3_c & CTRL3_C_SW_RESET) == 0U) {
+            return STATUS_OK;
+        }
+    }
+    return STATUS_TIMEOUT;
+}
+
 status_t
 lsm6dso32_init(void)
 {
@@ -251,24 +313,42 @@ lsm6dso32_init(void)
         return STATUS_TIMEOUT;
     }
 
-    /* CTRL1_XL = 0x4C: ODR[3:0]=0100 (104 Hz), FS[1:0]=11 (+-16 g,
-     * matching board_config.h's IMU_ACCEL_FS_G), LPF2_XL_EN=0 (first
-     * digital filter stage, not LPF2). +-16 g, not +-32 g - the DSO32's
-     * extended range isn't used here; verified bit-by-bit against the
-     * LSM6DSO32 datasheet CTRL1_XL/Table 44/45 encoding. */
-    if (write_reg(REG_CTRL1_XL, 0x4CU) != STATUS_OK) { /* 104 Hz, +-16 g */
+    /* Start from the sensor's power-on state every time. An MCU-only
+     * reset (watchdog, reflash, debugger) leaves the LSM6DSO32 powered
+     * and still configured - sensor hub included - and the hub bring-up
+     * in lsm6dso32_mag_init() is only valid against a disabled hub. */
+    status_t st = soft_reset();
+    if (st != STATUS_OK) {
+        return st;
+    }
+
+    if (write_reg(REG_CTRL1_XL, CTRL1_XL_VALUE) != STATUS_OK) {
         return STATUS_ERROR;
     }
-    /* CTRL2_G = 0x4C: ODR[3:0]=0100 (104 Hz), FS[1:0]=11 (+-2000 dps,
-     * matching IMU_GYRO_FS_DPS), FS_125=0. */
-    if (write_reg(REG_CTRL2_G, 0x4CU) != STATUS_OK) { /* 104 Hz, +-2000 dps */
+    if (write_reg(REG_CTRL2_G, CTRL2_G_VALUE) != STATUS_OK) {
         return STATUS_ERROR;
     }
     if (write_reg(REG_CTRL3_C, CTRL3_C_BDU | CTRL3_C_IF_INC) != STATUS_OK) {
         return STATUS_ERROR;
     }
+    /* Route data-ready to INT1 - nothing drives the pin out of reset
+     * (INT1_CTRL defaults to 0x00), and without it imu_task never gets
+     * its DRDY notification and free-runs off its 20 ms fallback timeout
+     * at half the sample rate. Written last, once the outputs are
+     * configured. */
+    if (write_reg(REG_INT1_CTRL, INT1_CTRL_DRDY_G) != STATUS_OK) {
+        return STATUS_ERROR;
+    }
 
     return STATUS_OK;
+}
+
+bool
+lsm6dso32_is_configured(void)
+{
+    uint8_t ctrl1_xl = 0U;
+    return (read_regs(REG_CTRL1_XL, &ctrl1_xl, 1U) == STATUS_OK) &&
+           (ctrl1_xl == CTRL1_XL_VALUE);
 }
 
 /* One-shot pass-through write of `val` to IIS2MDC register `reg` via the

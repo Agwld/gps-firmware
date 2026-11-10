@@ -25,7 +25,7 @@ extern "C" {
 #include "board/board_config.h" /* LAP_MAX_GATES */
 
 /* One gate's broadcastable state (ENU, relative to the current frame
- * origin) for the ~2 Hz GPS_Gate round-robin to the in-car dash. */
+ * origin) for the GPS_Gate round-robin to the in-car dash. */
 typedef struct {
     float east_m;
     float north_m;
@@ -78,7 +78,7 @@ typedef struct {
     uint8_t sector;
     uint8_t lap_flags;
 
-    /* temperatures (sys_task) */
+    /* temperatures (board + MCU: sys_task; IMU die: imu_task) */
     float mcp9800_temp_c;
     float imu_temp_c;
     float mcu_temp_c;
@@ -121,8 +121,8 @@ void canbc_state_set_time(uint32_t itow_ms, uint8_t utc_hour,
                            uint8_t time_flags);
 void canbc_state_set_lap(uint16_t lap, uint32_t running_time_ms,
                           uint8_t sector, uint8_t lap_flags);
-void canbc_state_set_temp(float mcp9800_temp_c, float imu_temp_c,
-                           float mcu_temp_c);
+void canbc_state_set_board_temp(float mcp9800_temp_c, float mcu_temp_c);
+void canbc_state_set_imu_temp(float imu_temp_c);
 void canbc_state_set_status(uint16_t uptime_s, uint16_t fault_bits,
                              uint8_t gps_retry_count,
                              uint8_t imu_retry_count, uint8_t cpu_load_pct);

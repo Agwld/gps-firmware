@@ -6,6 +6,7 @@
 #include "fusion/kf6.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 static int s_failures = 0;
@@ -193,9 +194,99 @@ test_speed_correction_projects_onto_heading(void)
                1e-3f);
 }
 
+/* An isolated wild fix must be gated out without disturbing the state,
+ * and must not be reported as a re-initialisation. */
+static void
+test_outlier_fix_is_rejected(void)
+{
+    kf6_init();
+    kf6_correct_pos(0U, 0.0f, 0.0f, 0.0f, 0.5f);
+    kf6_correct_vel(0U, 0.0f, 0.0f, 0.0f, 0.1f);
+    for (int i = 1; i <= 20; i++) {
+        predict_zero_accel((uint32_t) i);
+    }
+
+    bool reset = kf6_correct_pos(20U, 300.0f, 0.0f, 0.0f, 0.5f);
+
+    float e;
+    kf6_get_state(&e, NULL, NULL, NULL, NULL, NULL);
+    CHECK_NEAR("outlier fix leaves position alone", e, 0.0f, 0.05f);
+    if (reset) {
+        fprintf(stderr, "FAIL: a single outlier reported a filter reset\n");
+        s_failures++;
+    }
+}
+
+/* After a GPS outage the state has dead-reckoned away while the
+ * covariance still claims confidence, so EVERY fix fails the outlier
+ * gate. The filter must not stay locked out: after a run of consecutive
+ * rejections it has to accept that it is the one that's wrong and snap
+ * back onto GPS (position, and velocity on the fix that follows). */
+static void
+test_recovers_after_divergence(void)
+{
+    kf6_init();
+    kf6_correct_pos(0U, 0.0f, 0.0f, 0.0f, 0.5f);
+    kf6_correct_vel(0U, 0.0f, 0.0f, 0.0f, 0.1f);
+
+    /* Truth: the car is really 40 m east, doing 15 m/s east. The filter
+     * thinks it is parked at the origin and is confident about it. */
+    const float true_e = 40.0f;
+    const float true_ve = 15.0f;
+
+    uint32_t tick = 0U;
+    int resets = 0;
+    int fixes_until_reset = 0;
+
+    for (int fix = 1; fix <= 30 && resets == 0; fix++) {
+        for (int i = 0; i < 5; i++) { /* ~20 Hz fixes at 104 Hz predict */
+            predict_zero_accel(++tick);
+        }
+        if (kf6_correct_pos(tick, true_e, 0.0f, 0.0f, 0.5f)) {
+            resets++;
+            fixes_until_reset = fix;
+        }
+        kf6_correct_vel(tick, true_ve, 0.0f, 0.0f, 0.1f);
+    }
+
+    if (resets != 1) {
+        fprintf(stderr,
+                "FAIL: filter never recovered from divergence "
+                "(stayed locked out of GPS for 30 fixes)\n");
+        s_failures++;
+    }
+    if (fixes_until_reset < 5) {
+        fprintf(stderr,
+                "FAIL: filter reset after only %d rejected fixes - too "
+                "eager to be an outlier gate at all\n",
+                fixes_until_reset);
+        s_failures++;
+    }
+
+    float e, ve;
+    kf6_get_state(&e, NULL, NULL, &ve, NULL, NULL);
+    CHECK_NEAR("recovered position is back on GPS", e, true_e, 0.5f);
+    CHECK_NEAR("recovered velocity is back on GPS", ve, true_ve, 0.5f);
+
+    /* And it is a normal filter again afterwards: a consistent fix is
+     * simply fused, not treated as another reset. */
+    for (int i = 0; i < 5; i++) {
+        predict_zero_accel(++tick);
+    }
+    float e_expected = true_e + true_ve * 5.0f * IMU_DT;
+    bool reset_again = kf6_correct_pos(tick, e_expected, 0.0f, 0.0f, 0.5f);
+    if (reset_again) {
+        fprintf(stderr, "FAIL: consistent fix after recovery caused a "
+                        "second reset\n");
+        s_failures++;
+    }
+}
+
 int
 main(void)
 {
+    test_outlier_fix_is_rejected();
+    test_recovers_after_divergence();
     test_predict_tracks_constant_velocity();
     test_immediate_position_correction();
     test_delayed_correction_rewinds_and_replays();

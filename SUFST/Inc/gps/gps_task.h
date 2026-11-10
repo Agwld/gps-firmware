@@ -10,7 +10,14 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 void gps_task_main(void *argument);
+
+/** @brief GPS link recoveries since boot - UART RX re-arms plus receiver
+ *         re-configurations (saturating), for GPS_Status. Safe to call
+ *         from any task. */
+uint8_t gps_task_get_retry_count(void);
 
 #ifdef __cplusplus
 }

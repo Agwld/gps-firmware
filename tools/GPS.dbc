@@ -126,17 +126,26 @@ BO_ 1727 GPS_Command: 3 DASH
 
 CM_ BO_ 1712 "20 Hz fused position from the KF (lat/lon).";
 CM_ BO_ 1713 "20 Hz fused speed/course/altitude and fix quality summary.";
+CM_ SG_ 1713 fix_type "UBX-NAV-PVT fixType (2 = 2D, 3 = 3D, 4 = GNSS+DR), forced to 0 whenever the receiver's gnssFixOK flag is clear or no NAV-PVT has arrived for 1 s.";
 CM_ BO_ 1714 "50 Hz Mahony AHRS Euler output (yaw/pitch/roll).";
+CM_ SG_ 1714 fusion_status "What the estimate is built from (CAN_FUSION_STATUS_* in can_defs.h): bit0 IMU samples flowing, bit1 magnetometer responding, bit2 mag calibrated (yaw is a usable heading), bit3 ENU origin set, bit4 GPS-aided (a valid fix within the last 1 s; clear = dead reckoning), bit5 time locked to GPS by PPS.";
 CM_ BO_ 1715 "10 Hz lap timer status.";
+CM_ SG_ 1715 lap "Laps completed since the start/finish gate was last set or cleared.";
+CM_ SG_ 1715 flags "CAN_LAP_FLAG_* in can_defs.h: bit0 running (a lap is being timed), bit1 armed (start/finish gate placed), bit2 degraded (no recent GPS fix or no GPS time lock - crossings are not being timed reliably).";
 CM_ BO_ 1716 "Lap/sector/TM2 event, sent on occurrence (not periodic).";
 CM_ SG_ 1716 type "0=lap complete, 1=sector crossed, 2=TM2 time-mark; see CAN_LAP_EVENT_* in can_defs.h.";
+CM_ SG_ 1716 lap "LAP: number of the lap just completed (1 = first). SECTOR: laps completed before the lap that sector belongs to (so one less than that lap's LAP event). TM2: 0.";
 CM_ SG_ 1716 time_ms "Meaning depends on type: lap time, sector time, or GPS iTOW for a TM2 mark.";
 CM_ BO_ 1717 "5 Hz GNSS accuracy/DOP/RTK summary.";
 CM_ SG_ 1717 flags "bit0 gnssFixOK, bits1-2 carrSoln (0 none/1 float/2 fixed), bit3 diffSoln.";
 CM_ BO_ 1718 "100 Hz calibrated body-frame accelerometer, +-16 g FS.";
 CM_ BO_ 1719 "100 Hz calibrated body-frame gyroscope. 0.0625 dps/LSB, range +-2048 dps, covering the LSM6DSO32's +-2000 dps FS with margin.";
-CM_ BO_ 1720 "1 Hz temperature summary: MCP9800 board ambient, IMU die temp, MCU internal temp.";
+CM_ BO_ 1720 "1 Hz temperature summary: MCP9800 board ambient, IMU die temp, MCU internal temp (whole degrees). A sensor that fails to read keeps its last good value.";
 CM_ BO_ 1721 "1 Hz node health: uptime, fault bits, retry counters, CPU load.";
+CM_ SG_ 1721 fault_bits "The node's whole status event group (SYS_EVT_* in sys/app.h), not faults alone: bit0 GPS ready (valid fix), bit1 IMU ready, bit2 mag ready, bit3 time locked (PPS), bit4 ENU origin set, bit5 GPS fault (no NAV-PVT stream), bit6 IMU fault, bit7 mag fault.";
+CM_ SG_ 1721 gps_retry_count "GPS link recoveries since boot (UART re-arms + receiver re-configurations), saturating at 255.";
+CM_ SG_ 1721 imu_retry_count "Failed IMU reads since boot, saturating at 255.";
+CM_ SG_ 1721 uptime_s "Seconds since boot, saturating at 65535 (~18.2 h).";
 CM_ BO_ 1722 "10 Hz raw magnetometer, diagnostic only (not fed into AHRS directly). Units are uT*10, not raw sensor LSB, so the frame is self-describing.";
 CM_ SG_ 1722 cal_status "Continuous background calibration state: 0 uncalibrated, 1 collecting (candidate, still sweeping the heading circle), 2 calibrated (coverage good), 3 validated (also agrees with GPS course-over-ground).";
 CM_ BO_ 1723 "1 Hz ENU frame origin (absolute lat/lon). The gates and the node's own ENU are relative to this; re-anchored at each power-up's first fix, so the dash must re-read it rather than assume it's fixed.";
@@ -146,4 +155,4 @@ CM_ SG_ 1724 gate_flags "bit0 = valid; a cleared slot is broadcast with valid=0 
 CM_ BO_ 1725 "1 Hz GPS time reference for other nodes: iTOW (same time domain as Lap_Event TM2 marks) plus UTC wall clock. UTC date is not carried (the MoTeC gets it via NMEA RMC); note GPS time leads UTC by the leap-second count, so UTC h/m/s is not simply iTOW mod 1 day.";
 CM_ SG_ 1725 time_flags "bit0 = UTC time valid (NAV-PVT validTime), bit1 = fully resolved (no sub-second ambiguity).";
 CM_ BO_ 1727 "RX only: host/dash sends commands to the GPS node. byte0=cmd, byte1=arg0, byte2=arg1; see CAN_CMD_* in can_defs.h.";
-CM_ SG_ 1727 cmd "0x01 GATE_SET (arg0=slot), 0x02 GATE_CLEAR (arg0=slot,0xFF=all), 0x10 MAG_CAL_START, 0x11 MAG_CAL_STOP, 0x20 CONFIG_SAVE, 0x30 NMEA_CFG (arg0=rate Hz, arg1=enable).";
+CM_ SG_ 1727 cmd "0x01 GATE_SET (arg0=slot 0-7, or 0xFE=next free sector slot), 0x02 GATE_CLEAR (arg0=slot,0xFF=all), 0x10 MAG_CAL_START (discard the mag cal and re-sweep), 0x11 MAG_CAL_STOP (no effect), 0x20 CONFIG_SAVE (compact the flash store when next stationary), 0x30 NMEA_CFG (arg0=rate Hz 1-20 or 0=keep, arg1=enable).";

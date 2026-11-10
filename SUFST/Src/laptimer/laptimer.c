@@ -21,7 +21,11 @@ typedef struct {
     uint32_t last_sector_ms;
     uint16_t lap_count;
     uint8_t current_sector;
+    uint8_t sectors_crossed; /* bit i: sector gate i already counted this lap */
 } laptimer_state_t;
+
+_Static_assert(LAP_MAX_GATES <= 8U,
+               "sectors_crossed is an 8-bit mask over the gate slots");
 
 static laptimer_state_t s_state;
 
@@ -60,13 +64,15 @@ void laptimer_init(void)
     s_state.last_sector_ms = 0U;
     s_state.lap_count = 0U;
     s_state.current_sector = 0U;
+    s_state.sectors_crossed = 0U;
 }
 
-void laptimer_update(float east_m, float north_m, float prev_east_m,
-                      float prev_north_m, uint32_t itow_ms,
-                      uint32_t prev_itow_ms)
+uint8_t laptimer_update(float east_m, float north_m, float prev_east_m,
+                         float prev_north_m, uint32_t itow_ms,
+                         uint32_t prev_itow_ms)
 {
     float frac;
+    uint8_t events = 0U;
 
     if (gates_check_crossing(0U, prev_east_m, prev_north_m, east_m, north_m,
                               &frac)) {
@@ -78,6 +84,7 @@ void laptimer_update(float east_m, float north_m, float prev_east_m,
             s_state.lap_start_itow_ms = crossing_ms;
             s_state.sector_start_itow_ms = crossing_ms;
             s_state.current_sector = 0U;
+            s_state.sectors_crossed = 0U;
         } else {
             uint32_t elapsed = itow_elapsed_ms(s_state.lap_start_itow_ms,
                                                 crossing_ms);
@@ -93,20 +100,37 @@ void laptimer_update(float east_m, float north_m, float prev_east_m,
                  * value; without this the final sector is never timed. */
                 s_state.last_sector_ms = itow_elapsed_ms(
                     s_state.sector_start_itow_ms, crossing_ms);
+                /* With no sector gate crossed this lap, the "final
+                 * sector" is just the whole lap again - not an event. */
+                if (s_state.current_sector > 0U) {
+                    events |= LAPTIMER_EVT_SECTOR;
+                }
                 s_state.last_lap_ms = elapsed;
                 s_state.lap_count++;
                 s_state.lap_start_itow_ms = crossing_ms;
                 s_state.sector_start_itow_ms = crossing_ms;
                 s_state.current_sector = 0U;
+                s_state.sectors_crossed = 0U;
+                events |= LAPTIMER_EVT_LAP;
             }
         }
     }
 
     if (!s_state.running) {
-        return;
+        return events;
     }
 
     for (uint8_t i = 1U; i < LAP_MAX_GATES; i++) {
+        uint8_t bit = (uint8_t) (1U << i);
+
+        /* Once per lap per gate: position jitter while crawling over a
+         * sector line can re-trigger a forward crossing, and unlike the
+         * start/finish line there is no minimum-time debounce here - a
+         * second count would shift every later sector number this lap. */
+        if ((s_state.sectors_crossed & bit) != 0U) {
+            continue;
+        }
+
         if (gates_check_crossing(i, prev_east_m, prev_north_m, east_m,
                                   north_m, &frac)) {
             uint32_t crossing_ms
@@ -116,8 +140,12 @@ void laptimer_update(float east_m, float north_m, float prev_east_m,
                 s_state.sector_start_itow_ms, crossing_ms);
             s_state.sector_start_itow_ms = crossing_ms;
             s_state.current_sector++;
+            s_state.sectors_crossed |= bit;
+            events |= LAPTIMER_EVT_SECTOR;
         }
     }
+
+    return events;
 }
 
 bool laptimer_is_running(void)

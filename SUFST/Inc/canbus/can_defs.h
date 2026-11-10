@@ -71,6 +71,28 @@ extern "C" {
 #define CAN_LAP_EVENT_SECTOR 1U /* sector crossed: time_ms = sector time */
 #define CAN_LAP_EVENT_TM2    2U /* button/EXTINT time-mark: time_ms = iTOW */
 
+/* GPS_Attitude.fusion_status bit layout - what the attitude/position
+ * estimate is currently built from, so a consumer can tell a trustworthy
+ * heading or position from one that is coasting. */
+#define CAN_FUSION_STATUS_IMU_OK      (1U << 0) /* accel/gyro samples flowing */
+#define CAN_FUSION_STATUS_MAG_OK      (1U << 1) /* magnetometer responding */
+#define CAN_FUSION_STATUS_MAG_CAL_OK  (1U << 2) /* mag cal >= calibrated: yaw
+                                                  * is a usable heading */
+#define CAN_FUSION_STATUS_ORIGIN_SET  (1U << 3) /* ENU frame anchored */
+#define CAN_FUSION_STATUS_GPS_AIDED   (1U << 4) /* a valid fix corrected the
+                                                  * filter within the last 1 s
+                                                  * (clear => dead reckoning) */
+#define CAN_FUSION_STATUS_TIME_LOCKED (1U << 5) /* tick <-> GPS time mapping
+                                                  * disciplined by PPS */
+
+/* Lap_Status.flags bit layout */
+#define CAN_LAP_FLAG_RUNNING  (1U << 0) /* a lap is being timed */
+#define CAN_LAP_FLAG_ARMED    (1U << 1) /* start/finish gate is placed: the
+                                          * next crossing starts/ends a lap */
+#define CAN_LAP_FLAG_DEGRADED (1U << 2) /* no recent GPS fix or no GPS time
+                                          * lock: crossings are not being
+                                          * timed reliably */
+
 /* GPS_Quality.flags bit layout */
 #define CAN_GPS_QUALITY_FIX_OK          (1U << 0)
 #define CAN_GPS_QUALITY_CARR_SOLN_SHIFT 1U
@@ -81,14 +103,25 @@ extern "C" {
 
 /* GPS_Command.cmd sub-commands (RX only; node listens on CAN_ID_GPS_COMMAND).
  * byte0 = cmd, byte1 = arg0, byte2 = arg1; unused trailing bytes ignored. */
-#define CAN_CMD_GATE_SET      0x01U /* arg0 = slot (0=start/finish,1-7=sector);
-                                      * gate is placed at the node's current
-                                      * fused position/heading */
-#define CAN_CMD_GATE_CLEAR    0x02U /* arg0 = slot, 0xFFU = clear all */
-#define CAN_CMD_MAG_CAL_START 0x10U
-#define CAN_CMD_MAG_CAL_STOP  0x11U
-#define CAN_CMD_CONFIG_SAVE   0x20U
-#define CAN_CMD_NMEA_CFG      0x30U /* arg0 = rate Hz, arg1 = enable (0/1) */
+#define CAN_CMD_GATE_SET      0x01U /* arg0 = slot (0=start/finish,1-7=sector,
+                                      * CAN_GATE_SLOT_NEXT_SECTOR); gate is
+                                      * placed at the node's current fused
+                                      * position/heading */
+#define CAN_CMD_GATE_CLEAR    0x02U /* arg0 = slot, CAN_GATE_SLOT_ALL = all */
+#define CAN_CMD_MAG_CAL_START 0x10U /* discard the mag cal and re-sweep */
+#define CAN_CMD_MAG_CAL_STOP  0x11U /* accepted, no effect (cal is continuous) */
+#define CAN_CMD_CONFIG_SAVE   0x20U /* compact the flash store when next
+                                      * stationary (gates/mag-cal are already
+                                      * saved as they change) */
+#define CAN_CMD_NMEA_CFG      0x30U /* arg0 = rate Hz (0 = keep), arg1 =
+                                      * enable (0/1) */
+
+/* Special GATE_SET / GATE_CLEAR slot values */
+#define CAN_GATE_SLOT_NEXT_SECTOR 0xFEU /* GATE_SET: first free sector slot
+                                          * (the last one if all are in use) -
+                                          * what a lap-button short press
+                                          * sends */
+#define CAN_GATE_SLOT_ALL         0xFFU /* GATE_CLEAR: every slot */
 
 /* ------------------------------------------------------------------ */
 /* Decoded (engineering-unit) payload structs                         */
@@ -117,7 +150,7 @@ typedef struct {
     float yaw_deg;         /* raw u16, LSB = 0.01 deg, wrapped [0, 360) */
     float pitch_deg;       /* raw i16, LSB = 0.01 deg */
     float roll_deg;        /* raw i16, LSB = 0.01 deg */
-    uint8_t fusion_status; /* implementation-defined AHRS health/mode byte */
+    uint8_t fusion_status; /* CAN_FUSION_STATUS_* bits */
     uint8_t counter;       /* increments per send */
 } can_gps_attitude_t;
 
@@ -126,8 +159,7 @@ typedef struct {
     uint16_t lap;              /* raw as-is */
     uint32_t running_time_ms;  /* raw as-is, since current lap start */
     uint8_t sector;            /* raw as-is */
-    uint8_t flags;             /* implementation-defined status bits, e.g.
-                                 * gate-armed / GPS-suspended / stationary */
+    uint8_t flags;             /* CAN_LAP_FLAG_* bits */
 } can_lap_status_t;
 
 /* 0x6B4 Lap_Event */
@@ -169,15 +201,18 @@ typedef struct {
 typedef struct {
     float mcp9800_temp_c; /* raw i16, LSB = 0.01 C, board ambient */
     float imu_temp_c;     /* raw i16, LSB = 0.01 C, LSM6DSO32 die temp */
-    float mcu_temp_c;     /* raw i16, LSB = 0.01 C, STM32G431 internal */
+    float mcu_temp_c;     /* raw i16, LSB = 0.01 C, STM32G431 die temp */
 } can_gps_temp_t;
 
 /* 0x6B9 GPS_Status */
 typedef struct {
     uint16_t uptime_s;        /* raw as-is, since boot */
-    uint16_t fault_bits;      /* implementation-defined fault event-group */
-    uint8_t gps_retry_count;  /* raw as-is */
-    uint8_t imu_retry_count;  /* raw as-is */
+    uint16_t fault_bits;      /* SYS_EVT_* bits (sys/app.h): ready, time-
+                                * locked, origin-set and fault flags */
+    uint8_t gps_retry_count;  /* GPS link recoveries since boot: UART RX
+                                * re-arms + receiver re-configurations
+                                * (saturates at 255) */
+    uint8_t imu_retry_count;  /* failed IMU reads since boot (saturates) */
     uint8_t cpu_load_pct;     /* raw as-is, [0, 100] */
 } can_gps_status_t;
 
@@ -188,7 +223,8 @@ typedef struct {
     float mx_ut;         /* raw i16, LSB = 0.1 uT */
     float my_ut;         /* raw i16, LSB = 0.1 uT */
     float mz_ut;         /* raw i16, LSB = 0.1 uT */
-    uint8_t cal_status;  /* 0 uncalibrated, 1 calibrating, 2 calibrated */
+    uint8_t cal_status;  /* mag_cal_quality_t: 0 uncalibrated, 1
+                          * collecting, 2 calibrated, 3 validated */
 } can_gps_mag_t;
 
 /* 0x6BB GPS_Frame_Origin - the ENU origin the gates/track are relative

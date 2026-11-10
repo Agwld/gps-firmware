@@ -65,6 +65,7 @@ SECTIONS
   .rodata :
   {
     . = ALIGN(4);
+    KEEP(*(.fw_version))   /* version string, see Core/Src/main.c */
     *(.rodata)
     *(.rodata*)
     . = ALIGN(4);

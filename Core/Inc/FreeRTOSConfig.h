@@ -2,9 +2,9 @@
  * @file    FreeRTOSConfig.h
  * @brief   FreeRTOS kernel configuration for the SUFST GPS node.
  *
- * Fully static allocation: no heap, no software timers. Regenerating with
- * CubeMX must NOT re-introduce cmsis_os2.c / heap_4.c — see the
- * "Regenerating with CubeMX" checklist in README.md.
+ * Fully static allocation: no heap, no software timers. This project is
+ * hand-maintained, not CubeMX-generated: if any of it is ever regenerated,
+ * do not let CubeMX re-introduce cmsis_os2.c / heap_4.c.
  */
 
 #ifndef FREERTOS_CONFIG_H

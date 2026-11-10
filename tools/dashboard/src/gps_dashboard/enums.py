@@ -40,7 +40,6 @@ SYS_EVENT_BITS: list[tuple[int, str]] = [
     (5, "GPS fault"),
     (6, "IMU fault"),
     (7, "Mag fault"),
-    (8, "PVT tick"),
 ]
 #: Bits whose presence indicates a problem, for colouring the summary.
 SYS_EVENT_FAULT_BITS = (1 << 5) | (1 << 6) | (1 << 7)
@@ -60,9 +59,26 @@ LAP_EVENT_TYPE_NAMES: dict[int, str] = {
     2: "Time mark (button/EXTINT)",
 }
 
-#: SUFST/Src/imu/imu_task.c: only bit0 (running) is currently defined
-#: for Lap_Status.flags; anything else is shown as raw hex.
+#: SUFST/Inc/canbus/can_defs.h: CAN_LAP_FLAG_* (Lap_Status.flags).
 LAP_STATUS_RUNNING_BIT = 0x01
+LAP_STATUS_ARMED_BIT = 0x02
+LAP_STATUS_DEGRADED_BIT = 0x04
+#: Bits of Lap_Status.flags with a defined meaning; anything outside this
+#: mask is shown as raw hex.
+LAP_STATUS_KNOWN_BITS = (
+    LAP_STATUS_RUNNING_BIT | LAP_STATUS_ARMED_BIT | LAP_STATUS_DEGRADED_BIT
+)
+
+#: SUFST/Inc/canbus/can_defs.h: CAN_FUSION_STATUS_* (GPS_Attitude
+#: .fusion_status) - what the estimate is currently built from.
+FUSION_STATUS_BITS: list[tuple[int, str]] = [
+    (0, "IMU"),
+    (1, "Mag"),
+    (2, "Mag cal"),
+    (3, "Origin"),
+    (4, "GPS aided"),
+    (5, "Time locked"),
+]
 
 
 def describe_bits(value: int, names: list[tuple[int, str]]) -> str:

@@ -44,9 +44,16 @@
 #define GPS_CFG_RETRY_LIMIT    3U
 #define GPS_CFG_ACK_TIMEOUT_MS 500U
 /* The F9P takes up to ~1 s after power-up before its DDC port answers;
- * probe attempts are spaced to ride that out without tripping on it. */
-#define GPS_PROBE_RETRY_LIMIT  8U
-#define GPS_PROBE_TIMEOUT_MS   300U
+ * probe attempts are spaced to ride that out without tripping on it. The
+ * spacing has to be an explicit delay: while the receiver is still
+ * booting it NACKs its address, so a probe fails within microseconds
+ * rather than taking its timeout, and back-to-back retries would all be
+ * spent long before it wakes. 8 x 200 ms covers the boot time with
+ * margin; the delay also yields, so a dead bus can't starve the watchdog
+ * refresh in sys_task. */
+#define GPS_PROBE_RETRY_LIMIT    8U
+#define GPS_PROBE_TIMEOUT_MS     300U
+#define GPS_PROBE_RETRY_DELAY_MS 200U
 
 typedef struct {
     uint32_t key;
@@ -214,6 +221,9 @@ gps_config_run_boot_sequence(void)
     bool alive = false;
     for (uint32_t attempt = 0U;
          attempt < GPS_PROBE_RETRY_LIMIT && !alive; attempt++) {
+        if (attempt > 0U) {
+            vTaskDelay(pdMS_TO_TICKS(GPS_PROBE_RETRY_DELAY_MS));
+        }
         alive = probe();
     }
     if (!alive) {
@@ -246,6 +256,9 @@ gps_config_run_boot_sequence(void)
     };
 
     for (uint32_t attempt = 0U; attempt < GPS_CFG_RETRY_LIMIT; attempt++) {
+        if (attempt > 0U) {
+            vTaskDelay(pdMS_TO_TICKS(GPS_PROBE_RETRY_DELAY_MS));
+        }
         if (apply_valset(cfg, sizeof(cfg) / sizeof(cfg[0]))) {
             /* Readback (not the ACK) is what's trusted, per gps_config.h. */
             if (verify_u4(KEY_UART1_BAUDRATE, GPS_UART_BAUD)) {
