@@ -168,6 +168,19 @@ canbc_state_set_status(uint16_t uptime_s, uint16_t fault_bits,
 }
 
 void
+canbc_state_set_air(float airspeed_mps, float wind_speed_mps,
+                    float wind_from_deg, float pitot_scale, uint8_t air_flags)
+{
+    lock();
+    s_state.airspeed_mps = airspeed_mps;
+    s_state.wind_speed_mps = wind_speed_mps;
+    s_state.wind_from_deg = wind_from_deg;
+    s_state.pitot_scale = pitot_scale;
+    s_state.air_flags = air_flags;
+    unlock();
+}
+
+void
 canbc_state_set_origin(int32_t lat_1e7, int32_t lon_1e7)
 {
     lock();

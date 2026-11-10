@@ -26,6 +26,7 @@
 #include "canbus/can_defs.h"
 #include "canbus/canbc.h"
 #include "fusion/ahrs.h"
+#include "fusion/airdata.h"
 #include "fusion/geodesy.h"
 #include "fusion/kf6.h"
 #include "fusion/timebase.h"
@@ -529,6 +530,83 @@ handle_wheelspeed(quat_t q)
 #endif
 
 /* ------------------------------------------------------------------ */
+/* Pitot airspeed / wind (broadcast only)                              */
+/* ------------------------------------------------------------------ */
+
+static airdata_t s_air;
+static bool s_pitot_seen;
+static TickType_t s_last_pitot_tick;
+static uint32_t s_last_pitot_us;
+
+/* Feed the newest pitot sample, if one arrived, to the air-data estimator
+ * together with the fused ground velocity, and publish the result. Runs
+ * after the KF so the velocity is this loop's. Nothing here feeds back
+ * into fusion or lap timing. */
+static void
+handle_pitot(float ve_mps, float vn_mps, bool ground_valid, TickType_t now)
+{
+    app_pitot_sample_t smp;
+    if (xQueueReceive(g_pitot_queue, &smp, 0) == pdTRUE) {
+        uint32_t t_us = timebase_get_tick();
+        float dt = s_pitot_seen ? (float) (t_us - s_last_pitot_us) * 1e-6f
+                                : 0.01f;
+        if (dt <= 0.0f || dt > 0.5f) {
+            dt = 0.01f; /* first sample, or after a gap: nominal period */
+        }
+        s_last_pitot_us = t_us;
+        s_last_pitot_tick = now;
+        s_pitot_seen = true;
+
+        airdata_input_t in = {
+            .p_total_mbar = smp.ch_mbar[PITOT_TOTAL_CHANNEL - 1U],
+            .p_static_mbar =
+                airdata_mean_channels(smp.ch_mbar, PITOT_STATIC_CHANNEL_MASK),
+            .temp_c = smp.temp_c,
+            .temp_valid = smp.temp_valid,
+            .ve_mps = ve_mps,
+            .vn_mps = vn_mps,
+            .ground_valid = ground_valid,
+            .dt_s = dt,
+        };
+        airdata_update(&s_air, &in);
+    }
+
+    bool fresh = s_pitot_seen &&
+                 (now - s_last_pitot_tick) < pdMS_TO_TICKS(PITOT_STALE_MS);
+
+    uint8_t flags = 0U;
+    float airspeed = 0.0f;
+    if (fresh) {
+        flags |= CAN_GPS_AIR_FLAG_PITOT_OK;
+        airspeed = airdata_airspeed_mps(&s_air);
+        if (s_air.temp_used) {
+            flags |= CAN_GPS_AIR_FLAG_SENSOR_TEMP;
+        }
+    }
+    if (s_air.tared) {
+        flags |= CAN_GPS_AIR_FLAG_TARED;
+    }
+    if (airdata_wind_valid(&s_air)) {
+        flags |= CAN_GPS_AIR_FLAG_WIND_VALID;
+    }
+
+    float we, wn;
+    airdata_wind(&s_air, &we, &wn);
+    float wind_speed = sqrtf(we * we + wn * wn);
+    /* Compass bearing the wind blows FROM: that of the reversed vector. */
+    float wind_from = atan2f(-we, -wn) * RAD_TO_DEG;
+    if (wind_from < 0.0f) {
+        wind_from += 360.0f;
+    }
+    if (wind_from >= 360.0f) {
+        wind_from -= 360.0f;
+    }
+
+    canbc_state_set_air(airspeed, wind_speed, wind_from,
+                        airdata_scale(&s_air), flags);
+}
+
+/* ------------------------------------------------------------------ */
 /* IMU bring-up / health                                               */
 /* ------------------------------------------------------------------ */
 
@@ -595,6 +673,7 @@ imu_task_main(void *argument)
     bool imu_ok = imu_bring_up(IMU_INIT_ATTEMPTS, &mag_live);
 
     ahrs_init();
+    airdata_init(&s_air);
     kf6_init();
     gates_init();
     laptimer_init();
@@ -860,6 +939,8 @@ imu_task_main(void *argument)
         canbc_state_set_imu_accel(a.x * 1000.0f, a.y * 1000.0f,
                                    a.z * 1000.0f);
         canbc_state_set_imu_gyro(g.x, g.y, g.z);
+
+        handle_pitot(ve_mps, vn_mps, gps_aided, now);
 
         service_flash(fused_speed_mps);
 

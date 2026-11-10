@@ -61,7 +61,7 @@ Accuracy and time-to-first-fix are as specified in the u-blox ZED-F9P datasheet.
 |------|-------|
 | Controller | FDCAN1 in classic CAN mode, PA11 RX / PA12 TX |
 | Bit rate | 1 Mbit/s, 88 % sample point (500 kbit/s by building with `-DCAN_BITRATE_500K`) |
-| Identifiers | 11-bit standard; node transmits 0x6B0–0x6BD, receives 0x6BF and 0x251 |
+| Identifiers | 11-bit standard; node transmits 0x6B0–0x6BE, receives 0x6BF, 0x251, 0x190 and 0x191 |
 | Bus-off | Recovered automatically (checked once a second) |
 | Termination | Not on this board |
 
@@ -103,10 +103,10 @@ Accuracy and time-to-first-fix are as specified in the u-blox ZED-F9P datasheet.
 
 | Build | Flash | RAM | CCM |
 |-------|-------|-----|-----|
-| Release (`-Os`) | 65.6 KB of 124 KB (52 %) | 17.9 KB of 22 KB (80 %) | 0.6 KB of 10 KB |
-| Debug (`-O0 -g3`) | 109.9 KB of 124 KB (87 %) | 17.9 KB of 22 KB | 1.1 KB of 10 KB |
+| Release (`-Os`) | 67.8 KB of 124 KB (53 %) | 18.1 KB of 22 KB (80 %) | 0.6 KB of 10 KB |
+| Debug (`-O0 -g3`) | 113.8 KB of 124 KB (90 %) | 18.1 KB of 22 KB | 1.1 KB of 10 KB |
 
-The Debug build is close to the flash limit; watch it when adding code.
+The Debug build is close to the flash limit (90 %); watch it when adding code.
 
 ### Tasks
 
@@ -115,7 +115,7 @@ comment in [`SUFST/Inc/sys/app.h`](../SUFST/Inc/sys/app.h) before changing them.
 
 | Task | Priority | Rate | Stack | Role |
 |------|----------|------|-------|------|
-| `imu_task` | 6 | 104 Hz (IMU DRDY) | 3 KB | IMU read, AHRS, KF, gates, lap timing, flash store |
+| `imu_task` | 6 | 104 Hz (IMU DRDY) | 3 KB | IMU read, AHRS, KF, gates, lap timing, flash store, pitot air data |
 | `gps_task` | 5 | per UBX frame | 2 KB | F9P configuration, UBX parsing, PPS pairing, link supervision |
 | `can_task` | 3 | 100 Hz slots | 1 KB | Broadcast rota, Lap_Event TX, command dispatch |
 | `aux_task` | 2 | 10 Hz (configurable) | 1 KB | NMEA GGA/RMC/VTG to the MoTeC |
@@ -156,6 +156,7 @@ Little-endian, 11-bit IDs. Rates are from the broadcast rota in
 | 0x6BB | GPS_Frame_Origin | 1 Hz | 8 | ENU origin lat, lon (i32, 1e-7°); not sent until a fix anchors it |
 | 0x6BC | GPS_Gate | 5 Hz (one slot per frame) | 8 | Index, flags (bit0 valid), east, north (i16, 0.1 m), heading (u16, 0.1°) |
 | 0x6BD | GPS_Time | 1 Hz | 8 | iTOW (u32 ms), UTC h/m/s, flags (bit0 UTC valid, bit1 fully resolved) |
+| 0x6BE | GPS_Airspeed | 10 Hz | 8 | Airspeed, wind speed (u16, 0.01 m/s), wind from (u16, 0.1°), pitot scale (u8, 0.004 + 0.5), flags (4 bit), counter (4 bit) |
 
 #### Status bit fields
 
@@ -166,6 +167,7 @@ Little-endian, 11-bit IDs. Rates are from the broadcast rota in
 | `Lap_Event.type` | 0 lap complete · 1 sector complete · 2 TM2 time mark (time = iTOW) |
 | `GPS_Quality.flags` | 0 gnssFixOK · 1–2 carrier solution (0 none, 1 float, 2 fixed) · 3 differential |
 | `GPS_Mag.cal_status` | 0 uncalibrated · 1 collecting · 2 calibrated · 3 validated against GPS course |
+| `GPS_Airspeed.air_flags` | 0 pitot frames arriving · 1 tared at a standstill · 2 wind + scale converged · 3 density from the P4-A temperature (else 20 °C) |
 | `GPS_Status.fault_bits` | The whole status event group: 0 GPS fix · 1 IMU ready · 2 mag ready · 3 time locked · 4 origin set · 5 GPS fault (no NAV-PVT stream) · 6 IMU fault · 7 mag fault |
 
 `GPS_Time` is the bus-wide time reference: `itow_ms` is in the same time
@@ -179,6 +181,10 @@ gets it via NMEA RMC).
 |----|------|--------|-----|
 | 0x6BF | GPS_Command | Dash / laptop | Commands, below |
 | 0x251 | Wheel_Speeds | VCU | Front-left wheel only (the other channels are unreliable); used only if `KF_WHEELSPEED_AIDING` is enabled, which it is not by default |
+| 0x190 | PITOT_Pressure_CH1_4 | EvoScann P4-A | Four absolute pressures (Motorola u16, 0.01 mbar, +600 mbar). CH3 = pitot total, static = mean of CH1, CH2, CH4 (`board_config.h`) |
+| 0x191 | PITOT_Pressure_Status | EvoScann P4-A | Sensor temperature (Motorola i16, 0.01 °C), used for air density |
+
+The pitot definitions are owned by `sufst/can-defs` (`dbc/CAN-S.dbc`) and are not duplicated in `tools/GPS.dbc`.
 
 `GPS_Command` (byte 0 = cmd, byte 1 = arg0, byte 2 = arg1):
 
@@ -221,6 +227,7 @@ quality 0, RMC status V).
 | TIM-TM2 event time-marks | Implemented |
 | Fault handling (GPS link, IMU, CAN bus-off, watchdog) | Implemented |
 | Wheel-speed aiding (front-left) | Implemented, **disabled by default** pending validation |
+| Pitot airspeed + wind estimate | Implemented, host-tested; broadcast only (not used for position or timing) |
 | RTK | Receiver-side only; needs a correction source |
 
 ---

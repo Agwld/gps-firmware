@@ -21,7 +21,7 @@ def test_simulate_produces_all_message_types_and_decodes_cleanly():
             decoded = decoder.decode(raw)
             assert decoded is not None, "simulator must only emit DBC-valid frames"
             seen_names.add(decoded.name)
-            if len(seen_names) >= 12 and time.monotonic() - start > 1.1:
+            if len(seen_names) >= 13 and time.monotonic() - start > 1.1:
                 stop.set()
 
     start = time.monotonic()
@@ -43,6 +43,7 @@ def test_simulate_produces_all_message_types_and_decodes_cleanly():
         "GPS_Mag",
         "GPS_Frame_Origin",
         "GPS_Gate",
+        "GPS_Airspeed",
     }
     assert seen_names == expected
 

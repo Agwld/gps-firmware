@@ -135,6 +135,23 @@ static uint8_t sat_u4(uint8_t v)
     return (v > 0x0FU) ? 0x0FU : v;
 }
 
+static uint8_t sat_u8(int64_t v)
+{
+    if (v < 0) {
+        return 0U;
+    }
+    if (v > 0xFF) {
+        return 0xFFU;
+    }
+    return (uint8_t)v;
+}
+
+/* Big-endian ("Motorola") 16-bit read, for frames from other nodes. */
+static uint16_t rd_u16_be(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
 /* ------------------------------------------------------------------ */
 /* 0x6B0 GPS_Position                                                  */
 /* ------------------------------------------------------------------ */
@@ -642,6 +659,71 @@ status_t can_unpack_gps_time(const uint8_t in[8], can_gps_time_t *out)
     out->utc_min = rd_u8(&in[5]);
     out->utc_sec = rd_u8(&in[6]);
     out->flags = rd_u8(&in[7]);
+
+    return STATUS_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* 0x6BE GPS_Airspeed                                                  */
+/* ------------------------------------------------------------------ */
+
+status_t can_pack_gps_airspeed(const can_gps_airspeed_t *in, uint8_t out[8])
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    wr_u16(&out[0], sat_u16(round_f(in->airspeed_mps * 100.0f)));
+    wr_u16(&out[2], sat_u16(round_f(in->wind_speed_mps * 100.0f)));
+    wr_u16(&out[4], sat_u16(round_f(in->wind_from_deg * 10.0f)));
+    wr_u8(&out[6], sat_u8(round_f((in->pitot_scale - 0.5f) * 250.0f)));
+    wr_u8(&out[7], (uint8_t)((in->flags & 0x0FU) | (uint8_t)(in->counter << 4)));
+
+    return STATUS_OK;
+}
+
+status_t can_unpack_gps_airspeed(const uint8_t in[8], can_gps_airspeed_t *out)
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    out->airspeed_mps = (float)rd_u16(&in[0]) * 0.01f;
+    out->wind_speed_mps = (float)rd_u16(&in[2]) * 0.01f;
+    out->wind_from_deg = (float)rd_u16(&in[4]) * 0.1f;
+    out->pitot_scale = 0.5f + (float)rd_u8(&in[6]) * 0.004f;
+    out->flags = (uint8_t)(rd_u8(&in[7]) & 0x0FU);
+    out->counter = (uint8_t)(rd_u8(&in[7]) >> 4);
+
+    return STATUS_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* 0x190 / 0x191 EvoScann P4-A pitot (RX)                              */
+/* ------------------------------------------------------------------ */
+
+status_t can_unpack_pitot_pressure(const uint8_t in[8],
+                                    can_pitot_pressure_t *out)
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    for (uint32_t i = 0U; i < 4U; i++) {
+        out->ch_mbar[i] = 600.0f + (float)rd_u16_be(&in[2U * i]) * 0.01f;
+    }
+
+    return STATUS_OK;
+}
+
+status_t can_unpack_pitot_status(const uint8_t in[8],
+                                  can_pitot_status_t *out)
+{
+    if (in == NULL || out == NULL) {
+        return STATUS_INVALID_ARG;
+    }
+
+    out->temperature_c = (float)(int16_t)rd_u16_be(&in[0]) * 0.01f;
 
     return STATUS_OK;
 }

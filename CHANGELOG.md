@@ -46,6 +46,13 @@ needs confirming on the bench.
 
 ### Added
 
+- **Pitot airspeed and wind** (`GPS_Airspeed`, 0x6BE, 10 Hz) from the
+  EvoScann P4-A on 0x190/0x191: CH3 total pressure against the mean of CH1,
+  CH2 and CH4, zeroed at every standstill, with an EKF fitting the wind and
+  the pitot's installation scale factor against the GPS ground velocity.
+  Broadcast only — not used for position or lap timing. Dashboard simulator
+  and DBC updated.
+
 - Runtime health: GPS link supervision with automatic re-arm/re-configure,
   IMU config read-back with re-init, magnetometer liveness, GPS-only degraded
   mode if the IMU dies.
@@ -85,4 +92,6 @@ needs confirming on the bench.
 - No on-hardware validation yet: follow the bring-up checklist in
   `docs/DEVELOPER.md`. CPU load and stack high-water marks are unmeasured.
 - `LAP_MIN_LAP_TIME_MS` (10 s) rejects skidpad-length laps.
-- The Debug build uses 87 % of code flash.
+- The Debug build uses 90 % of code flash.
+- The pitot channel mapping (CH3 total, CH1/2/4 static) and the P4-A scaling
+  (from `can-defs`, itself inferred) need confirming on the car.

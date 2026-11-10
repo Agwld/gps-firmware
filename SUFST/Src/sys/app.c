@@ -35,6 +35,7 @@ QueueHandle_t g_gate_cmd_queue;
 QueueHandle_t g_mag_cal_cmd_queue;
 QueueHandle_t g_nmea_cfg_queue;
 QueueHandle_t g_wheelspeed_queue;
+QueueHandle_t g_pitot_queue;
 QueueHandle_t g_gps_pvt_queue;
 QueueHandle_t g_gps_pvt_queue_nmea;
 
@@ -44,6 +45,7 @@ QueueHandle_t g_gps_pvt_queue_nmea;
 #define MAG_CAL_CMD_QUEUE_LEN 2U
 #define NMEA_CFG_QUEUE_LEN   2U
 #define WHEELSPEED_QUEUE_LEN 1U /* overwritten with the latest reading */
+#define PITOT_QUEUE_LEN      1U /* overwritten with the latest sample */
 #define GPS_PVT_QUEUE_LEN    1U /* overwritten with the latest fix */
 #define GPS_PVT_QUEUE_NMEA_LEN 1U
 
@@ -67,6 +69,9 @@ static uint8_t s_nmea_cfg_storage[NMEA_CFG_QUEUE_LEN * sizeof(app_cmd_t)];
 
 static StaticQueue_t s_wheelspeed_qcb;
 static uint8_t s_wheelspeed_storage[WHEELSPEED_QUEUE_LEN * sizeof(float)];
+
+static StaticQueue_t s_pitot_qcb;
+static uint8_t s_pitot_storage[PITOT_QUEUE_LEN * sizeof(app_pitot_sample_t)];
 
 static StaticQueue_t s_gps_pvt_qcb;
 static uint8_t s_gps_pvt_storage[GPS_PVT_QUEUE_LEN * sizeof(ubx_nav_pvt_t)];
@@ -160,6 +165,9 @@ app_init(void)
     g_wheelspeed_queue =
         xQueueCreateStatic(WHEELSPEED_QUEUE_LEN, sizeof(float),
                             s_wheelspeed_storage, &s_wheelspeed_qcb);
+    g_pitot_queue =
+        xQueueCreateStatic(PITOT_QUEUE_LEN, sizeof(app_pitot_sample_t),
+                            s_pitot_storage, &s_pitot_qcb);
     g_gps_pvt_queue =
         xQueueCreateStatic(GPS_PVT_QUEUE_LEN, sizeof(ubx_nav_pvt_t),
                             s_gps_pvt_storage, &s_gps_pvt_qcb);

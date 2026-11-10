@@ -90,6 +90,13 @@ typedef struct {
     uint8_t imu_retry_count;
     uint8_t cpu_load_pct;
 
+    /* pitot airspeed + wind (imu_task) */
+    float airspeed_mps;
+    float wind_speed_mps;
+    float wind_from_deg;
+    float pitot_scale;
+    uint8_t air_flags;
+
     /* ENU frame origin + lap gates (imu_task) - broadcast slowly so the
      * in-car dash can draw the start/finish and sector lines. Origin is
      * absolute lat/lon (i32 1e-7); origin_valid clears until the first
@@ -126,6 +133,10 @@ void canbc_state_set_imu_temp(float imu_temp_c);
 void canbc_state_set_status(uint16_t uptime_s, uint16_t fault_bits,
                              uint8_t gps_retry_count,
                              uint8_t imu_retry_count, uint8_t cpu_load_pct);
+
+void canbc_state_set_air(float airspeed_mps, float wind_speed_mps,
+                         float wind_from_deg, float pitot_scale,
+                         uint8_t air_flags);
 
 /** @brief Publish the ENU frame origin (absolute lat/lon, i32 1e-7 deg)
  *         so the dash can anchor the broadcast ENU gates. */

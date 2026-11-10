@@ -43,7 +43,13 @@ extern "C" {
 #define CAN_ID_GPS_FRAME_ORIGIN 0x6BBU /* 1 Hz - ENU origin lat/lon */
 #define CAN_ID_GPS_GATE      0x6BCU /* ~5 Hz aggregate, round-robin per slot */
 #define CAN_ID_GPS_TIME      0x6BDU /* 1 Hz - GPS iTOW + UTC clock */
+#define CAN_ID_GPS_AIRSPEED  0x6BEU /* 10 Hz - pitot airspeed + wind */
 #define CAN_ID_GPS_COMMAND   0x6BFU /* RX, event */
+
+/* Received from other nodes (definitions owned by sufst/can-defs,
+ * dbc/CAN-S.dbc): the EvoScann P4-A pitot pressure scanner. */
+#define CAN_ID_PITOT_PRESSURE 0x190U /* 100 Hz, PITOT_Pressure_CH1_4 */
+#define CAN_ID_PITOT_STATUS   0x191U /* 1 Hz, PITOT_Pressure_Status */
 
 /* Frame lengths (bytes) - match tools/GPS.dbc `BO_` length fields */
 #define CAN_DLC_GPS_POSITION  8U
@@ -60,6 +66,7 @@ extern "C" {
 #define CAN_DLC_GPS_FRAME_ORIGIN 8U
 #define CAN_DLC_GPS_GATE      8U
 #define CAN_DLC_GPS_TIME      8U
+#define CAN_DLC_GPS_AIRSPEED  8U
 #define CAN_DLC_GPS_COMMAND   3U
 
 /* ------------------------------------------------------------------ */
@@ -268,6 +275,40 @@ typedef struct {
 #define CAN_GPS_TIME_FLAG_UTC_VALID      (1U << 0) /* NAV-PVT validTime */
 #define CAN_GPS_TIME_FLAG_FULLY_RESOLVED (1U << 1) /* no sub-s ambiguity */
 
+/* 0x6BE GPS_Airspeed - pitot airspeed and the wind estimated from it
+ * against the GPS ground velocity (fusion/airdata.h). For logging and
+ * analysis: nothing on the node uses it for position or lap timing. */
+typedef struct {
+    float airspeed_mps;  /* raw u16, LSB = 0.01 m/s; true airspeed (after
+                          * the estimated pitot scale factor) */
+    float wind_speed_mps; /* raw u16, LSB = 0.01 m/s */
+    float wind_from_deg; /* raw u16, LSB = 0.1 deg, [0, 360): direction the
+                          * wind blows FROM, compass (0 = north, 90 = east) */
+    float pitot_scale;   /* raw u8, LSB = 0.004, offset 0.5: estimated
+                          * installation factor k (pitot reads k x true) */
+    uint8_t flags;       /* CAN_GPS_AIR_FLAG_* */
+    uint8_t counter;     /* increments per send */
+} can_gps_airspeed_t;
+
+#define CAN_GPS_AIR_FLAG_PITOT_OK    (1U << 0) /* pitot frames arriving */
+#define CAN_GPS_AIR_FLAG_TARED       (1U << 1) /* zeroed at a standstill */
+#define CAN_GPS_AIR_FLAG_WIND_VALID  (1U << 2) /* wind + scale converged */
+#define CAN_GPS_AIR_FLAG_SENSOR_TEMP (1U << 3) /* density from the P4-A's
+                                                * temperature (else 20 C) */
+
+/* 0x190 PITOT_Pressure_CH1_4 (RX) - four absolute pressures. Motorola
+ * 16-bit unsigned, 0.01 mbar/bit, offset 600 mbar; CH1 in bytes 0-1
+ * (MSB first) through CH4 in bytes 6-7. */
+typedef struct {
+    float ch_mbar[4]; /* [0] = CH1 ... [3] = CH4 */
+} can_pitot_pressure_t;
+
+/* 0x191 PITOT_Pressure_Status (RX) - only the temperature is used:
+ * Motorola 16-bit signed, 0.01 C/bit, bytes 0-1. */
+typedef struct {
+    float temperature_c;
+} can_pitot_status_t;
+
 /* 0x6BF GPS_Command (RX) */
 typedef struct {
     uint8_t cmd;  /* CAN_CMD_* */
@@ -337,6 +378,15 @@ status_t can_unpack_gps_gate(const uint8_t in[8], can_gps_gate_t *out);
 
 status_t can_pack_gps_time(const can_gps_time_t *in, uint8_t out[8]);
 status_t can_unpack_gps_time(const uint8_t in[8], can_gps_time_t *out);
+
+status_t can_pack_gps_airspeed(const can_gps_airspeed_t *in, uint8_t out[8]);
+status_t can_unpack_gps_airspeed(const uint8_t in[8],
+                                  can_gps_airspeed_t *out);
+
+status_t can_unpack_pitot_pressure(const uint8_t in[8],
+                                    can_pitot_pressure_t *out);
+status_t can_unpack_pitot_status(const uint8_t in[8],
+                                  can_pitot_status_t *out);
 
 #ifdef __cplusplus
 }

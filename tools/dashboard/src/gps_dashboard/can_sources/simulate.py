@@ -68,6 +68,7 @@ _MESSAGE_RATES: list[tuple[str, float]] = [
     # One slot per fire, round-robined over the gate set (matches the
     # firmware's ~5 Hz round-robin in canbc_task.c).
     ("GPS_Gate", 5.0),
+    ("GPS_Airspeed", 10.0),
 ]
 
 #: Circuit shape: waypoints (east, north) in metres for a nominal
@@ -614,5 +615,20 @@ class SimulateCanSource(CanSource):
                 "my_ut": 20.0 * math.sin(math.radians(heading_deg)),
                 "mz_ut": -40.0,
                 "cal_status": 2,
+            }
+        if name == "GPS_Airspeed":
+            # A steady 3 m/s south-westerly (blowing towards the north-
+            # east), so airspeed visibly differs from ground speed by
+            # direction round the lap, as on the real node.
+            wind_e = wind_n = 3.0 / math.sqrt(2.0)
+            ve = speed_mps * math.sin(math.radians(heading_deg))
+            vn = speed_mps * math.cos(math.radians(heading_deg))
+            return {
+                "airspeed_mps": math.hypot(ve - wind_e, vn - wind_n),
+                "wind_speed_mps": 3.0,
+                "wind_from_deg": 225.0,
+                "pitot_scale": 1.0,
+                "air_flags": 0x0F,  # pitot OK, tared, wind valid, sensor temp
+                "counter": counter % 16,
             }
         raise ValueError(f"simulator has no generator for message {name!r}")

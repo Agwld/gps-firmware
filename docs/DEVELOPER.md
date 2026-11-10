@@ -42,8 +42,8 @@ build/Release/
 └── gps-firmware.map   # Linker map
 ```
 
-The build prints the memory use at the end. v1.0.0: Release 65.6 KB / 124 KB
-flash, Debug 109.9 KB — Debug is the one that will run out first.
+The build prints the memory use at the end. v1.0.0: Release 67.8 KB / 124 KB
+flash, Debug 113.8 KB (90 %) — Debug is the one that will run out first.
 
 ### Configuration
 
@@ -85,6 +85,7 @@ print failures and return non-zero, no framework.
 |------|--------|
 | `test_ubx` | UBX parser (sync, checksum, truncation), frame builder, decoders |
 | `test_can_pack` | Pack/unpack of every CAN message, scaling and saturation |
+| `test_airdata` | Pitot density, channel averaging, standstill tare, wind + scale-factor convergence |
 | `test_ahrs` | Mahony AHRS convergence and conventions |
 | `test_kf6` | KF predict/correct, delayed correction, outlier rejection, divergence recovery, speed aiding |
 | `test_geodesy` | ENU ↔ lat/lon |
@@ -95,7 +96,7 @@ print failures and return non-zero, no framework.
 | `test_nmea_out` | GGA/RMC/VTG formatting against hand-computed sentences |
 | `test_flash_store` | Records, CRC, restore order, clear-all, A/B page selection after an interrupted compaction |
 
-Not covered by tests: the FreeRTOS tasks and anything touching hardware.
+Expected: 12/12 pass. Not covered by tests: the FreeRTOS tasks and anything touching hardware.
 
 ### Dashboard tests
 
@@ -127,6 +128,7 @@ After flashing a board for the first time:
 4. **GPS** — `GPS_Time` flags go valid, then `fault_bits` bit3 (time locked), bit0 (fix) and bit4 (origin set). `gps_retry_count` should stay at 0 on a healthy link.
 5. **Temperatures** — `GPS_Temp`: three plausible values.
 6. **Gates** — place one with the lap button, power-cycle, confirm it reappears after the first fix (`GPS_Gate`, valid flag).
+7. **Pitot** — with the P4-A connected, `GPS_Airspeed` bit0 is set; after 3 s stationary with a fix, bit1 (tared) and airspeed ≈ 0. After a few laps bit2 (wind valid) should set, with `pitot_scale` near 1 — a value pinned at 0.5 or 1.52 means the channel mapping in `board_config.h` is wrong.
 
 ## Debugging
 
@@ -213,7 +215,7 @@ e.g. `canbus: use front-left wheel speed only`.
 |---------|-----|
 | `arm-none-eabi-gcc: command not found` | Toolchain not on `PATH` |
 | `undefined reference to '__errno'` | Already handled by `Core/Src/syscalls_errno.c` and `-fno-math-errno`; check neither was removed |
-| Debug build overflows flash | It is at 87 %: build Release, or trim |
+| Debug build overflows flash | It is at 90 %: build Release, or trim |
 | Host tests won't link a module | Add its source to `tests/test_<module>.deps` |
 | Board resets every ~1.25 s | Watchdog: something blocks `sys_task` (lowest priority) |
 | No CAN traffic | Transceiver power, 120 Ω termination at both bus ends, bit rate |

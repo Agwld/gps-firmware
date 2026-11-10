@@ -107,6 +107,17 @@
  * limited to riding out GPS dropouts. */
 #define KF_WHEELSPEED_AIDING   0
 
+/*
+ * Pitot (EvoScann P4-A on CAN, 0x190): which channels are which. CH3 is
+ * the pitot tube's total-pressure port; the static reference is the
+ * average of the other three channels. Channels are numbered 1-4 as in
+ * the DBC; the mask has bit (n-1) set for channel n.
+ */
+#define PITOT_TOTAL_CHANNEL        3U
+#define PITOT_STATIC_CHANNEL_MASK  ((1U << 0) | (1U << 1) | (1U << 3))
+/* No pitot frame for this long: airspeed is reported as unavailable. */
+#define PITOT_STALE_MS             500U
+
 /* A fix (or, for the receiver link, any NAV-PVT) older than this is
  * treated as lost: the fusion status drops GPS_AIDED and lap timing is
  * flagged degraded. 1 s is 20 missed fixes at the nominal rate. */

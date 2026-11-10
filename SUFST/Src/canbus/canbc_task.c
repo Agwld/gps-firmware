@@ -1,7 +1,8 @@
 /**
  * @file    canbc_task.c
  * @brief   CAN broadcast task: staggered periodic TX rota, immediate
- *          Lap_Event TX, and RX (GPS_Command + Wheel_Speeds) dispatch.
+ *          Lap_Event TX, and RX (GPS_Command, Wheel_Speeds, pitot)
+ *          dispatch.
  *
  * Producers (imu_task, gps_task, sys_task) never touch FDCAN directly -
  * they publish into canbc.c's mutex-guarded state, and this task alone
@@ -77,6 +78,7 @@ enum {
     ROTA_GPS_FRAME_ORIGIN,
     ROTA_GPS_GATE,
     ROTA_GPS_TIME,
+    ROTA_GPS_AIRSPEED,
     ROTA_COUNT,
 };
 
@@ -102,6 +104,9 @@ static const canbc_rota_entry_t s_rota[ROTA_COUNT] = {
      * an unsynced frame self-describing, and consumers get a liveness
      * signal either way. */
     [ROTA_GPS_TIME] = {CAN_ID_GPS_TIME, CAN_DLC_GPS_TIME, 100, 71},
+    /* Phase 7: a slot only the 100 Hz IMU frames otherwise use. */
+    [ROTA_GPS_AIRSPEED] =
+        {CAN_ID_GPS_AIRSPEED, CAN_DLC_GPS_AIRSPEED, 10, 7},
 };
 
 /* Per-message rolling send counters (can_defs.h: the counter byte lets a
@@ -267,6 +272,15 @@ send_rota_entry(uint32_t which, const canbc_state_t *s)
         can_pack_gps_time(&m, buf);
         break;
     }
+    case ROTA_GPS_AIRSPEED: {
+        /* 4-bit counter: it shares byte 7 with the flags. */
+        can_gps_airspeed_t m = {
+            s->airspeed_mps, s->wind_speed_mps, s->wind_from_deg,
+            s->pitot_scale, s->air_flags,
+            (uint8_t) (s_tx_counter[ROTA_GPS_AIRSPEED]++ & 0x0FU)};
+        can_pack_gps_airspeed(&m, buf);
+        break;
+    }
     default:
         return;
     }
@@ -312,6 +326,16 @@ canbc_hw_init(void)
 
     filter.FilterIndex = 1U;
     filter.FilterID1 = CAN_ID_WHEEL_SPEEDS;
+    filter.FilterID2 = 0x7FFU;
+    HAL_FDCAN_ConfigFilter(&hfdcan1, &filter);
+
+    filter.FilterIndex = 2U;
+    filter.FilterID1 = CAN_ID_PITOT_PRESSURE;
+    filter.FilterID2 = 0x7FFU;
+    HAL_FDCAN_ConfigFilter(&hfdcan1, &filter);
+
+    filter.FilterIndex = 3U;
+    filter.FilterID1 = CAN_ID_PITOT_STATUS;
     filter.FilterID2 = 0x7FFU;
     HAL_FDCAN_ConfigFilter(&hfdcan1, &filter);
 
@@ -408,6 +432,11 @@ HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         return;
     }
 
+    /* Latest P4-A temperature, carried into every pressure sample (the
+     * status frame only comes at 1 Hz). ISR-only state. */
+    static float s_pitot_temp_c;
+    static bool s_pitot_temp_valid;
+
     FDCAN_RxHeaderTypeDef header;
     uint8_t data[8];
     BaseType_t hp_woken = pdFALSE;
@@ -426,6 +455,21 @@ HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
             float speed_mps = 0.01f * (float) fl;
             xQueueOverwriteFromISR(g_wheelspeed_queue, &speed_mps,
                                     &hp_woken);
+        } else if (header.Identifier == CAN_ID_PITOT_PRESSURE) {
+            can_pitot_pressure_t p;
+            can_unpack_pitot_pressure(data, &p);
+            app_pitot_sample_t sample;
+            for (uint32_t i = 0U; i < 4U; i++) {
+                sample.ch_mbar[i] = p.ch_mbar[i];
+            }
+            sample.temp_c = s_pitot_temp_c;
+            sample.temp_valid = s_pitot_temp_valid;
+            xQueueOverwriteFromISR(g_pitot_queue, &sample, &hp_woken);
+        } else if (header.Identifier == CAN_ID_PITOT_STATUS) {
+            can_pitot_status_t st;
+            can_unpack_pitot_status(data, &st);
+            s_pitot_temp_c = st.temperature_c;
+            s_pitot_temp_valid = true;
         }
     }
 

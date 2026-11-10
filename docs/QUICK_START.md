@@ -30,10 +30,10 @@ cmake --preset Release
 cmake --build --preset Release
 ```
 
-Output: `build/Release/gps-firmware.{elf,hex,bin}` — about 66 KB of the 124 KB
+Output: `build/Release/gps-firmware.{elf,hex,bin}` — about 68 KB of the 124 KB
 code flash. The build prints the memory use at the end.
 
-For on-target debugging use the `Debug` preset instead (`build/Debug/`, ~110 KB).
+For on-target debugging use the `Debug` preset instead (`build/Debug/`, ~114 KB).
 
 ## Run the unit tests
 
@@ -45,7 +45,7 @@ cmake --build --preset Test
 ctest --preset Test
 ```
 
-Expected: 11/11 pass.
+Expected: 12/12 pass.
 
 ## Flash the board
 

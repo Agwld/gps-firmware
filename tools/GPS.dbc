@@ -119,6 +119,14 @@ BO_ 1725 GPS_Time: 8 GPS_NODE
  SG_ utc_sec : 48|8@1+ (1,0) [0|60] "s" DASH
  SG_ time_flags : 56|8@1+ (1,0) [0|255] "" DASH
 
+BO_ 1726 GPS_Airspeed: 8 GPS_NODE
+ SG_ airspeed_mps : 0|16@1+ (0.01,0) [0|655.35] "m/s" DASH
+ SG_ wind_speed_mps : 16|16@1+ (0.01,0) [0|655.35] "m/s" DASH
+ SG_ wind_from_deg : 32|16@1+ (0.1,0) [0|360] "deg" DASH
+ SG_ pitot_scale : 48|8@1+ (0.004,0.5) [0.5|1.52] "" DASH
+ SG_ air_flags : 56|4@1+ (1,0) [0|15] "" DASH
+ SG_ counter : 60|4@1+ (1,0) [0|15] "" DASH
+
 BO_ 1727 GPS_Command: 3 DASH
  SG_ cmd : 0|8@1+ (1,0) [0|255] "" GPS_NODE
  SG_ arg0 : 8|8@1+ (1,0) [0|255] "" GPS_NODE
@@ -154,5 +162,11 @@ CM_ SG_ 1724 gate_index "Which gate slot this frame carries (plain data field, n
 CM_ SG_ 1724 gate_flags "bit0 = valid; a cleared slot is broadcast with valid=0 so the dash removes it.";
 CM_ BO_ 1725 "1 Hz GPS time reference for other nodes: iTOW (same time domain as Lap_Event TM2 marks) plus UTC wall clock. UTC date is not carried (the MoTeC gets it via NMEA RMC); note GPS time leads UTC by the leap-second count, so UTC h/m/s is not simply iTOW mod 1 day.";
 CM_ SG_ 1725 time_flags "bit0 = UTC time valid (NAV-PVT validTime), bit1 = fully resolved (no sub-second ambiguity).";
+CM_ BO_ 1726 "10 Hz pitot airspeed and the wind estimated from it against the GPS ground velocity (fusion/airdata.c). Logging/analysis only: not used for position or lap timing. Source: EvoScann P4-A on 0x190, CH3 = total pressure, static = mean of CH1, CH2, CH4.";
+CM_ SG_ 1726 airspeed_mps "True airspeed: Bernoulli on the tared dynamic pressure, divided by pitot_scale. 0 until the first standstill tare, or with no pitot frames.";
+CM_ SG_ 1726 wind_from_deg "Compass direction the wind blows FROM (0 = north, 90 = east).";
+CM_ SG_ 1726 pitot_scale "Estimated installation factor k: the pitot reads k x the true airspeed.";
+CM_ SG_ 1726 air_flags "CAN_GPS_AIR_FLAG_*: bit0 pitot frames arriving, bit1 tared at a standstill, bit2 wind + scale converged, bit3 density from the sensor temperature (else 20 C assumed).";
+CM_ SG_ 1726 counter "4-bit rolling counter.";
 CM_ BO_ 1727 "RX only: host/dash sends commands to the GPS node. byte0=cmd, byte1=arg0, byte2=arg1; see CAN_CMD_* in can_defs.h.";
 CM_ SG_ 1727 cmd "0x01 GATE_SET (arg0=slot 0-7, or 0xFE=next free sector slot), 0x02 GATE_CLEAR (arg0=slot,0xFF=all), 0x10 MAG_CAL_START (discard the mag cal and re-sweep), 0x11 MAG_CAL_STOP (no effect), 0x20 CONFIG_SAVE (compact the flash store when next stationary), 0x30 NMEA_CFG (arg0=rate Hz 1-20 or 0=keep, arg1=enable).";

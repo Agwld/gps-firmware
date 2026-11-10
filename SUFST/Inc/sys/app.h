@@ -10,6 +10,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "FreeRTOS.h"
@@ -100,6 +101,20 @@ extern QueueHandle_t g_nmea_cfg_queue;
  * from the VCU's Wheel_Speeds frame, 0x251) for kf6_correct_speed(). Only
  * consumed when KF_WHEELSPEED_AIDING is enabled (board_config.h). */
 extern QueueHandle_t g_wheelspeed_queue;
+
+/** One EvoScann P4-A pitot sample as forwarded from the CAN RX ISR: the
+ * four pressures of the latest 0x190 frame, plus the sensor temperature
+ * from the latest 0x191 status frame (if one has arrived). */
+typedef struct {
+    float ch_mbar[4];
+    float temp_c;
+    bool temp_valid;
+} app_pitot_sample_t;
+
+/** FDCAN RX ISR -> imu_task: latest pitot sample, overwritten (length 1).
+ * imu_task runs the air-data estimator because it owns the fused ground
+ * velocity the wind fit needs. */
+extern QueueHandle_t g_pitot_queue;
 
 /** gps_task -> imu_task: latest NAV-PVT, overwritten (length 1) since
  * only the newest one matters - imu_task owns the geodesy origin and kf6

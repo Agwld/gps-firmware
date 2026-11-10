@@ -9,7 +9,7 @@ The SUFST STAG 12 GPS node is a **standalone sensor module** that transforms raw
 | **Timing resolution** | ~1 ms (crossings interpolated in the fused 104 Hz state, stamped in GPS time) |
 | **Lap detection** | Automatic gate crossing, steering-wheel programmable (short/long/very-long press) |
 | **Gate persistence** | Stored as absolute lat/lon, reproducible after power-cycle-and-move |
-| **Broadcast** | 20 Hz position/velocity, 50 Hz attitude, 100 Hz IMU, ~5 Hz gates, 1 Hz GPS/UTC time, CAN 1 Mbps |
+| **Broadcast** | 20 Hz position/velocity, 50 Hz attitude, 100 Hz IMU, 10 Hz pitot airspeed + wind, ~5 Hz gates, 1 Hz GPS/UTC time, CAN 1 Mbps |
 | **GNSS** | u-blox ZED-F9P (GPS + Galileo, 20 Hz) |
 | **IMU** | LSM6DSO32 accel+gyro + IIS2MDC magnetometer, 104 Hz |
 | **Hardware timing** | Steering-wheel button edge-stamped by GPS receiver (nanosecond precision) |
@@ -56,14 +56,14 @@ Requires `arm-none-eabi` toolchain (GCC 13.x+ recommended):
 ```bash
 cmake --preset Release
 cmake --build --preset Release
-# Output: build/Release/gps-firmware.{elf,hex,bin}, ~66 KB of 124 KB
+# Output: build/Release/gps-firmware.{elf,hex,bin}, ~68 KB of 124 KB
 ```
 
 Debug build (with `-O0`):
 ```bash
 cmake --preset Debug
 cmake --build --preset Debug
-# Output: build/Debug/, ~110 KB (still fits)
+# Output: build/Debug/, ~114 KB (still fits)
 ```
 
 ### Unit tests (host machine)
@@ -74,7 +74,7 @@ Runs on native compiler (no ARM toolchain needed):
 cmake --preset Test
 cmake --build --preset Test
 ctest --preset Test
-# 11/11 tests: UBX parsing, CAN pack/unpack, fusion, timing, persistence
+# 12/12 tests: UBX parsing, CAN pack/unpack, fusion, air data, timing, persistence
 ```
 
 ### Dashboard (reference UI)

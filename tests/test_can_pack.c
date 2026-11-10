@@ -441,6 +441,76 @@ static void test_gps_time_roundtrip(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 0x6BE GPS_Airspeed                                                  */
+/* ------------------------------------------------------------------ */
+
+static void test_gps_airspeed_roundtrip(void)
+{
+    can_gps_airspeed_t in = { .airspeed_mps = 27.43f,
+                              .wind_speed_mps = 3.61f,
+                              .wind_from_deg = 236.3f,
+                              .pitot_scale = 1.072f,
+                              .flags = CAN_GPS_AIR_FLAG_PITOT_OK |
+                                       CAN_GPS_AIR_FLAG_TARED |
+                                       CAN_GPS_AIR_FLAG_WIND_VALID,
+                              .counter = 9U };
+    uint8_t buf[8];
+    can_gps_airspeed_t out;
+
+    CHECK(can_pack_gps_airspeed(&in, buf) == STATUS_OK, "pack failed");
+    CHECK(can_unpack_gps_airspeed(buf, &out) == STATUS_OK, "unpack failed");
+
+    CHECK(fabs_f(out.airspeed_mps - in.airspeed_mps) <= 0.015f, "airspeed");
+    CHECK(fabs_f(out.wind_speed_mps - in.wind_speed_mps) <= 0.015f, "wind");
+    CHECK(fabs_f(out.wind_from_deg - in.wind_from_deg) <= 0.15f, "wind dir");
+    CHECK(fabs_f(out.pitot_scale - in.pitot_scale) <= 0.006f, "scale %f",
+          (double) out.pitot_scale);
+    CHECK(out.flags == in.flags, "flags");
+    CHECK(out.counter == in.counter, "counter");
+
+    /* Layout against the DBC: airspeed 0|16, flags 56|4, counter 60|4. */
+    CHECK(buf[0] == (uint8_t) (2743U & 0xFFU), "airspeed byte 0");
+    CHECK(buf[1] == (uint8_t) (2743U >> 8), "airspeed byte 1");
+    CHECK(buf[7] == (uint8_t) (0x07U | (9U << 4)), "flags/counter byte");
+}
+
+/* ------------------------------------------------------------------ */
+/* 0x190 / 0x191 pitot (RX, Motorola)                                  */
+/* ------------------------------------------------------------------ */
+
+static void test_pitot_unpack(void)
+{
+    /* Raw = (mbar - 600) / 0.01, big-endian per channel:
+     *   CH1 999.92 -> 39992 = 0x9C38   CH2 999.40 -> 39940 = 0x9C04
+     *   CH3 1005.30 -> 40530 = 0x9E52  CH4 600.00 -> 0
+     * matching PTPS_CH1..4 at start bits 7/23/39/55, 16 bits, @0+. */
+    const uint8_t frame[8] = {0x9C, 0x38, 0x9C, 0x04, 0x9E, 0x52, 0x00, 0x00};
+    can_pitot_pressure_t p;
+
+    CHECK(can_unpack_pitot_pressure(frame, &p) == STATUS_OK, "unpack");
+    CHECK(fabs_f(p.ch_mbar[0] - 999.92f) <= 0.005f, "CH1 %f",
+          (double) p.ch_mbar[0]);
+    CHECK(fabs_f(p.ch_mbar[1] - 999.40f) <= 0.005f, "CH2 %f",
+          (double) p.ch_mbar[1]);
+    CHECK(fabs_f(p.ch_mbar[2] - 1005.30f) <= 0.005f, "CH3 %f",
+          (double) p.ch_mbar[2]);
+    CHECK(fabs_f(p.ch_mbar[3] - 600.0f) <= 0.005f, "CH4 %f",
+          (double) p.ch_mbar[3]);
+
+    /* Temperature: signed, 0.01 C. 2650 = 0x0A5A -> 26.50 C; -512 =
+     * 0xFE00 -> -5.12 C. */
+    const uint8_t warm[8] = {0x0A, 0x5A, 0, 0, 0, 0, 0, 0};
+    const uint8_t cold[8] = {0xFE, 0x00, 0, 0, 0, 0, 0, 0};
+    can_pitot_status_t st;
+    CHECK(can_unpack_pitot_status(warm, &st) == STATUS_OK, "unpack status");
+    CHECK(fabs_f(st.temperature_c - 26.50f) <= 0.005f, "temp %f",
+          (double) st.temperature_c);
+    CHECK(can_unpack_pitot_status(cold, &st) == STATUS_OK, "unpack status");
+    CHECK(fabs_f(st.temperature_c + 5.12f) <= 0.005f, "neg temp %f",
+          (double) st.temperature_c);
+}
+
+/* ------------------------------------------------------------------ */
 /* NULL-argument guards (spot check)                                  */
 /* ------------------------------------------------------------------ */
 
@@ -509,6 +579,8 @@ int main(void)
     test_gps_frame_origin_roundtrip();
     test_gps_gate_roundtrip();
     test_gps_time_roundtrip();
+    test_gps_airspeed_roundtrip();
+    test_pitot_unpack();
     test_null_args();
     test_nonfinite_is_clamped();
 

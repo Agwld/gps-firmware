@@ -27,6 +27,7 @@ def test_decodes_every_message_name_present():
         "GPS_Frame_Origin",
         "GPS_Gate",
         "GPS_Time",
+        "GPS_Airspeed",
         "GPS_Command",
     }
 

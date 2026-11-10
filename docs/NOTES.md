@@ -4,6 +4,12 @@ This document captures design rationale, known limitations, and planned improvem
 
 ## Design decisions
 
+### Pitot airspeed is broadcast, not fused
+
+**Decision**: The pitot (EvoScann P4-A, 0x190) produces an airspeed and wind estimate on `GPS_Airspeed`, but does not feed the position/velocity filter or lap timing.
+
+**Rationale**: a pitot measures speed through the air. Wind turns that into a biased ground-speed measurement whose sign flips round the lap (a 5 m/s wind is a 5 m/s error), and GPS velocity is already good to ~0.1 m/s. Comparing the two instead gives a useful by-product for the aero team: the wind and the pitot's installation factor.
+
 ### Absolute lat/lon for gate storage (not ENU)
 
 **Decision**: Gates are stored in flash as int32_t lat/lon (1e-7° precision) instead of ENU coordinates.
@@ -201,11 +207,11 @@ Reported live in `GPS_Status.cpu_load_pct`, from FreeRTOS run-time stats clocked
 arm-none-eabi-size -A build/Release/gps-firmware.elf
 ```
 
-**v1.0.0**: Release 65.6 KB flash (52 % of 124 KB), 17.9 KB RAM (80 % of 22 KB). Debug 109.9 KB flash (87 %) — the Debug build is the tighter constraint. Stack sizes come from `-fstack-usage`; see `SUFST/Inc/sys/app.h`.
+**v1.0.0**: Release 67.8 KB flash (53 % of 124 KB), 18.1 KB RAM (80 % of 22 KB). Debug 113.8 KB flash (90 %) — the Debug build is the tighter constraint. Stack sizes come from `-fstack-usage`; see `SUFST/Inc/sys/app.h`.
 
 ### CAN bandwidth
 
-About 325 frames/s (two 100 Hz IMU frames, 50 Hz attitude, 20 Hz position/velocity, the rest slower) — roughly 4 % of a 1 Mbit/s bus.
+About 335 frames/s transmitted (two 100 Hz IMU frames, 50 Hz attitude, 20 Hz position/velocity, the rest slower) — roughly 4 % of a 1 Mbit/s bus.
 
 ## Common gotchas for future maintainers
 

@@ -36,7 +36,8 @@ void MX_FDCAN1_Init(void)
     hfdcan1.Init.DataTimeSeg1 = 14U;
     hfdcan1.Init.DataTimeSeg2 = 2U;
 
-    hfdcan1.Init.StdFiltersNbr = 2U; /* GPS_Command (0x6BF), Wheel_Speeds (0x251) */
+    /* GPS_Command (0x6BF), Wheel_Speeds (0x251), pitot 0x190 + 0x191 */
+    hfdcan1.Init.StdFiltersNbr = 4U;
     hfdcan1.Init.ExtFiltersNbr = 0U;
     hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
 

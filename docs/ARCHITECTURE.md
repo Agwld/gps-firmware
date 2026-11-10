@@ -33,7 +33,7 @@ mutex allocated statically at start-up. It does four things:
 
 | Task | Prio | Driven by | Owns |
 |------|------|-----------|------|
-| `imu_task` | 6 | IMU data-ready interrupt (104 Hz), 20 ms timeout fallback | AHRS, KF, geodesy origin, gates, lap timer, mag calibration, flash store |
+| `imu_task` | 6 | IMU data-ready interrupt (104 Hz), 20 ms timeout fallback | AHRS, KF, geodesy origin, gates, lap timer, mag calibration, flash store, pitot air data |
 | `gps_task` | 5 | USART3 idle-line / DMA events | F9P configuration, UBX parser, PPS pairing, GPS link supervision |
 | `can_task` | 3 | 10 ms slots | FDCAN1: broadcast rota, Lap_Event TX, command dispatch, bus-off recovery |
 | `aux_task` | 2 | NMEA rate (10 Hz default) | USART3 TX |
@@ -54,8 +54,8 @@ data structures are:
 Queues ([`app.h`](../SUFST/Inc/sys/app.h)): CAN RX → `can_task`; gate,
 config-save and mag-cal commands → `imu_task`; latest NAV-PVT → `imu_task` and
 `aux_task` (separate length-1 overwrite queues, so neither steals the other's
-copy); Lap_Event → `can_task`; NMEA config → `aux_task`; wheel speed →
-`imu_task`.
+copy); Lap_Event → `can_task`; NMEA config → `aux_task`; wheel speed and
+pitot samples (from the CAN RX interrupt) → `imu_task`.
 
 ## Time base
 
@@ -117,6 +117,30 @@ the KF is restarted at that moment so it starts at (0, 0, 0). Conversions use a
 flat-Earth tangent plane scaled by the WGS84 meridian and normal radii at the
 origin — well under a metre of error across a circuit. Latitude/longitude stay
 in double precision; ENU offsets are float.
+
+## Air data ([`airdata.c`](../SUFST/Src/fusion/airdata.c))
+
+The EvoScann P4-A pitot scanner sends four absolute pressures on CAN at
+100 Hz. CH3 is the pitot tube's total-pressure port; the static reference is
+the mean of CH1, CH2 and CH4. Its airspeed and a wind estimate are broadcast
+on `GPS_Airspeed` for logging. **Nothing here feeds the position filter or lap
+timing**: a pitot measures airspeed, and wind makes that a biased measure of
+ground speed.
+
+- **Airspeed**: incompressible Bernoulli, v = √(2q/ρ), with ρ from the static
+  pressure and the P4-A's temperature (20 °C if it isn't reporting).
+- **Tare**: each channel has its own zero error (~50 Pa between channels, a
+  phantom ~9 m/s). Whenever the GPS-aided ground speed has been below
+  0.3 m/s for more than a second, the total-minus-static difference is taken
+  as zero; airspeed is reported from the first tare after boot (3 s
+  stationary). Wind present during the stop is tared away too, so a stop in
+  shelter gives the best zero.
+- **Wind and scale factor**: the pitot sits in the car's own flow, so it reads
+  k·|v_ground − wind|. A 3-state extended Kalman filter on [k, wind_e,
+  wind_n] fits that model against the fused ground velocity above 8 m/s. The
+  wind is observable because the car points in every direction over a lap; k
+  because its speed varies. A 3σ innovation gate rejects gusts and other cars'
+  wakes. The broadcast airspeed is the measured value divided by k.
 
 ## Lap timing
 
@@ -237,7 +261,7 @@ VCU's `Wheel_Speeds` (front-left wheel only).
 ## Testing
 
 Host-side unit tests (no hardware needed) cover the UBX parser, CAN packing,
-AHRS, KF (including delayed correction, outlier rejection and divergence
+air data (tare, wind and scale convergence on a simulated session), AHRS, KF (including delayed correction, outlier rejection and divergence
 recovery), geodesy, gates, lap timer, magnetometer calibration, NMEA formatting,
 time base and the flash store's record, restore and page-selection logic. The
 FreeRTOS tasks and hardware drivers are not covered and have not yet been run on
