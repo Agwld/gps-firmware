@@ -45,6 +45,7 @@ extern "C" {
 #define CAN_ID_GPS_TIME      0x6BDU /* 1 Hz - GPS iTOW + UTC clock */
 #define CAN_ID_GPS_AIRSPEED  0x6BEU /* 10 Hz - pitot airspeed + wind */
 #define CAN_ID_GPS_COMMAND   0x6BFU /* RX, event */
+#define CAN_ID_GPS_GATE_SET  0x6C0U /* RX, event - place a gate at a position */
 
 /* Received from other nodes (definitions owned by sufst/can-defs,
  * dbc/CAN-S.dbc): the EvoScann P4-A pitot pressure scanner. */
@@ -68,6 +69,7 @@ extern "C" {
 #define CAN_DLC_GPS_TIME      8U
 #define CAN_DLC_GPS_AIRSPEED  8U
 #define CAN_DLC_GPS_COMMAND   3U
+#define CAN_DLC_GPS_GATE_SET  8U
 
 /* ------------------------------------------------------------------ */
 /* Shared field enums                                                  */
@@ -246,7 +248,18 @@ typedef struct {
 /* 0x6BC GPS_Gate - one lap gate, round-robined a slot at a time. Position
  * is ENU metres relative to GPS_Frame_Origin (i16 0.1 m, +-3276.7 m spans
  * any FS track). `index` is a plain data field (which slot this is), not a
- * DBC multiplexor - every frame has the same layout. */
+ * DBC multiplexor - every frame has the same layout.
+ *
+ * heading_deg is the direction of travel through the gate as an ENU math
+ * angle: degrees anticlockwise from EAST (atan2(north, east)), not a
+ * compass bearing. 0 = travelling east, 90 = north.
+ *
+ * 0x6C0 GPS_Gate_Set (RX) uses this same struct and layout to place a gate
+ * at a given position instead of at the car: index = slot (0..7, or
+ * CAN_GATE_SLOT_NEXT_SECTOR), flags = 0 (reserved), position relative to
+ * the node's CURRENT GPS_Frame_Origin. Ignored until the frame is
+ * anchored, like CAN_CMD_GATE_SET. The gate is saved to flash and
+ * broadcast exactly as one set from the car's position. */
 typedef struct {
     uint8_t index;      /* 0 = start/finish, 1..7 = sector */
     uint8_t flags;      /* bit0 = valid (0 => slot empty/cleared) */

@@ -61,7 +61,7 @@ Accuracy and time-to-first-fix are as specified in the u-blox ZED-F9P datasheet.
 |------|-------|
 | Controller | FDCAN1 in classic CAN mode, PA11 RX / PA12 TX |
 | Bit rate | 1 Mbit/s, 88 % sample point (500 kbit/s by building with `-DCAN_BITRATE_500K`) |
-| Identifiers | 11-bit standard; node transmits 0x6B0–0x6BE, receives 0x6BF, 0x251, 0x190 and 0x191 |
+| Identifiers | 11-bit standard; node transmits 0x6B0–0x6BE, receives 0x6BF, 0x6C0, 0x251, 0x190 and 0x191 |
 | Bus-off | Recovered automatically (checked once a second) |
 | Termination | Not on this board |
 
@@ -180,9 +180,14 @@ gets it via NMEA RMC).
 | ID | Name | Source | Use |
 |----|------|--------|-----|
 | 0x6BF | GPS_Command | Dash / laptop | Commands, below |
+| 0x6C0 | GPS_Gate_Set | Laptop (GPS Desktop) | Place a gate at a given position rather than at the car: same layout as `GPS_Gate` (slot, flags = 0, east/north 0.1 m relative to the current `GPS_Frame_Origin`, heading 0.1° anticlockwise from east). Slot 0 clears the sectors, 0xFE = next free sector. Ignored until the node has an origin. Saved to flash like any gate |
 | 0x251 | Wheel_Speeds | VCU | Front-left wheel only (the other channels are unreliable); used only if `KF_WHEELSPEED_AIDING` is enabled, which it is not by default |
 | 0x190 | PITOT_Pressure_CH1_4 | EvoScann P4-A | Four absolute pressures (Motorola u16, 0.01 mbar, +600 mbar). CH3 = pitot total, static = mean of CH1, CH2, CH4 (`board_config.h`) |
 | 0x191 | PITOT_Pressure_Status | EvoScann P4-A | Sensor temperature (Motorola i16, 0.01 °C), used for air density |
+
+Gate headings on `GPS_Gate` and `GPS_Gate_Set` are ENU math angles (degrees anticlockwise from east), not compass bearings.
+
+`GPS_Status.fault_bits` bits 8–10 report the flash store: bit 8 a gate or calibration change is not in flash yet (the page was full; it is written when the car is next stationary), bit 9 the last flash write failed, bit 10 a compaction is waiting for the car to be stationary.
 
 The pitot definitions are owned by `sufst/can-defs` (`dbc/CAN-S.dbc`) and are not duplicated in `tools/GPS.dbc`.
 
@@ -194,7 +199,7 @@ The pitot definitions are owned by `sufst/can-defs` (`dbc/CAN-S.dbc`) and are no
 | 0x02 | GATE_CLEAR | arg0 = slot, or 0xFF = all |
 | 0x10 | MAG_CAL_START | Discard the magnetometer calibration and re-learn it |
 | 0x11 | MAG_CAL_STOP | Accepted, no effect (calibration is continuous) |
-| 0x20 | CONFIG_SAVE | Compact the flash store once the car is stationary |
+| 0x20 | CONFIG_SAVE | Compact the flash store once the car is stationary. Gates and the magnetometer calibration are already written to flash as they change, so this is housekeeping, not a save |
 | 0x30 | NMEA_CFG | arg0 = rate 1–20 Hz (0 = unchanged), arg1 = enable (0/1) |
 
 ### NMEA output

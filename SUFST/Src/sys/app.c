@@ -32,6 +32,7 @@
 QueueHandle_t g_can_rx_cmd_queue;
 QueueHandle_t g_lap_event_queue;
 QueueHandle_t g_gate_cmd_queue;
+QueueHandle_t g_gate_set_queue;
 QueueHandle_t g_mag_cal_cmd_queue;
 QueueHandle_t g_nmea_cfg_queue;
 QueueHandle_t g_wheelspeed_queue;
@@ -42,6 +43,7 @@ QueueHandle_t g_gps_pvt_queue_nmea;
 #define CAN_RX_CMD_QUEUE_LEN 4U
 #define LAP_EVENT_QUEUE_LEN  4U
 #define GATE_CMD_QUEUE_LEN   8U
+#define GATE_SET_QUEUE_LEN   8U /* a whole gate layout */
 #define MAG_CAL_CMD_QUEUE_LEN 2U
 #define NMEA_CFG_QUEUE_LEN   2U
 #define WHEELSPEED_QUEUE_LEN 1U /* overwritten with the latest reading */
@@ -59,6 +61,9 @@ static uint8_t s_lap_event_storage[LAP_EVENT_QUEUE_LEN *
 
 static StaticQueue_t s_gate_cmd_qcb;
 static uint8_t s_gate_cmd_storage[GATE_CMD_QUEUE_LEN * sizeof(app_cmd_t)];
+
+static StaticQueue_t s_gate_set_qcb;
+static uint8_t s_gate_set_storage[GATE_SET_QUEUE_LEN * sizeof(can_gps_gate_t)];
 
 static StaticQueue_t s_mag_cal_cmd_qcb;
 static uint8_t
@@ -156,6 +161,9 @@ app_init(void)
     g_gate_cmd_queue =
         xQueueCreateStatic(GATE_CMD_QUEUE_LEN, sizeof(app_cmd_t),
                             s_gate_cmd_storage, &s_gate_cmd_qcb);
+    g_gate_set_queue =
+        xQueueCreateStatic(GATE_SET_QUEUE_LEN, sizeof(can_gps_gate_t),
+                            s_gate_set_storage, &s_gate_set_qcb);
     g_mag_cal_cmd_queue =
         xQueueCreateStatic(MAG_CAL_CMD_QUEUE_LEN, sizeof(app_cmd_t),
                             s_mag_cal_cmd_storage, &s_mag_cal_cmd_qcb);

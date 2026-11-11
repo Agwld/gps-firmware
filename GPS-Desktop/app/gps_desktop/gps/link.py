@@ -7,7 +7,7 @@ from collections import deque
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from gps_desktop.gps.dbc import COMMAND_MESSAGE, Database, Frame
+from gps_desktop.gps.dbc import Database, Frame
 from gps_desktop.gps.sources import Recorder, Source
 from gps_desktop.gps.store import GpsData
 
@@ -74,7 +74,7 @@ class Link(QObject):
             decoded, t = self._decoded.popleft()
             if decoded is None:
                 self.data.unknown_frames += 1
-            elif decoded[0] != COMMAND_MESSAGE:
+            elif decoded[0] not in self.db.outgoing:  # Our own commands, echoed by some adapters
                 batch.append((decoded[0], decoded[1], t))
         self.data.ingest(batch)
         if self._outcome and not self._decoded:

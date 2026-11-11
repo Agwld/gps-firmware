@@ -196,10 +196,12 @@ class Tile(QFrame):
 class FlagGrid(QWidget):
     """The bits of a status word, one badge each."""
 
-    def __init__(self, bits: list[tuple[int, str, str]], fault_mask: int = 0, columns: int = 4) -> None:
+    def __init__(self, bits: list[tuple[int, str, str]], fault_mask: int = 0, columns: int = 4,
+                 warn_mask: int = 0) -> None:
         super().__init__()
         self.bits = bits
         self.fault_mask = fault_mask
+        self.warn_mask = warn_mask
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(6)
@@ -220,7 +222,8 @@ class FlagGrid(QWidget):
             elif not value & mask:
                 hex_code = theme.TEXT_FAINT
             else:
-                hex_code = theme.FAULT if mask & self.fault_mask else theme.OK
+                hex_code = (theme.FAULT if mask & self.fault_mask else
+                            theme.WARN if mask & self.warn_mask else theme.OK)
             badge.set_state(name, hex_code)
 
 

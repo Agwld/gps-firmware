@@ -339,6 +339,11 @@ canbc_hw_init(void)
     filter.FilterID2 = 0x7FFU;
     HAL_FDCAN_ConfigFilter(&hfdcan1, &filter);
 
+    filter.FilterIndex = 4U; /* StdFiltersNbr in fdcan.c counts these */
+    filter.FilterID1 = CAN_ID_GPS_GATE_SET;
+    filter.FilterID2 = 0x7FFU;
+    HAL_FDCAN_ConfigFilter(&hfdcan1, &filter);
+
     HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT,
                                   FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE);
 
@@ -447,6 +452,14 @@ HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
             can_gps_command_t cmd;
             can_unpack_gps_command(data, &cmd);
             xQueueSendFromISR(g_can_rx_cmd_queue, &cmd, &hp_woken);
+        } else if (header.Identifier == CAN_ID_GPS_GATE_SET) {
+            /* Straight to imu_task, which owns the gate table. A short
+             * frame is ignored rather than read past its payload. */
+            if (header.DataLength == FDCAN_DLC_BYTES_8) {
+                can_gps_gate_t gate;
+                can_unpack_gps_gate(data, &gate);
+                xQueueSendFromISR(g_gate_set_queue, &gate, &hp_woken);
+            }
         } else if (header.Identifier == CAN_ID_WHEEL_SPEEDS) {
             /* Front-left only - see CAN_ID_WHEEL_SPEEDS above. */
             int16_t fl = (int16_t) (uint16_t) (

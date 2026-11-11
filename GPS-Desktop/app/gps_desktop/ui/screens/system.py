@@ -16,10 +16,10 @@ from gps_desktop.ui.widgets import Card, FlagGrid, button, colored, label, scree
 class FlagCard(Card):
     """A status word shown as flags, with lines of related values underneath."""
 
-    def __init__(self, title: str, cid: str, bits: list, fault_mask: int = 0) -> None:
+    def __init__(self, title: str, cid: str, bits: list, fault_mask: int = 0, warn_mask: int = 0) -> None:
         super().__init__(title)
         self.cid = cid
-        self.grid = FlagGrid(bits, fault_mask)
+        self.grid = FlagGrid(bits, fault_mask, warn_mask=warn_mask)
         self.box.addWidget(self.grid)
         self.detail = label("", "muted", wrap=True)
         self.detail.setTextFormat(Qt.TextFormat.RichText)
@@ -44,7 +44,8 @@ class SystemScreen(Screen):
         box, self.header = screen_layout(body, "Node")
 
         self.cards = {
-            "system": FlagCard("Node status", "GPS_Status.fault_bits", enums.SYSTEM_BITS, enums.SYSTEM_FAULT_MASK),
+            "system": FlagCard("Node status", "GPS_Status.fault_bits", enums.SYSTEM_BITS, enums.SYSTEM_FAULT_MASK,
+                               enums.SYSTEM_WARN_MASK),
             "fusion": FlagCard("Sensor fusion", "GPS_Attitude.fusion_status", enums.FUSION_BITS),
             "quality": FlagCard("GNSS solution", "GPS_Quality.flags", enums.QUALITY_BITS),
             "time": FlagCard("GPS time", "GPS_Time.time_flags", enums.TIME_BITS),
@@ -62,9 +63,13 @@ class SystemScreen(Screen):
         self.mag_button = self.panel.add(button("Restart calibration", self._restart_mag_cal,
                                                 tooltip="Discard the magnetometer calibration and collect it again"))
         self.panel.note("Calibration is continuous. After a restart, drive a full circle so every heading is covered.")
-        self.panel.section("Configuration")
-        self.save_button = self.panel.add(button("Save to flash", self._save,
-                                                 tooltip="The node writes its stored settings when it is next stationary"))
+        self.panel.section("Flash storage")
+        self.panel.note("The node writes gates and the magnetometer calibration to its flash as soon as they "
+                        "change, so there is nothing to save by hand. The Node status flags show if a change "
+                        "has not reached flash yet.")
+        self.save_button = self.panel.add(button("Tidy up flash now", self._save,
+                                                 tooltip="Compact the node's flash store when the car is next stationary. "
+                                                         "Only housekeeping: it does not change what is saved."))
         self.panel.section("NMEA output to the logger")
         rate_row = QHBoxLayout()
         rate_row.addWidget(label("Rate", "muted"))
@@ -94,7 +99,7 @@ class SystemScreen(Screen):
         self.ctx.command(enums.CMD_MAG_CAL_START, done="Magnetometer calibration restarted")
 
     def _save(self) -> None:
-        self.ctx.command(enums.CMD_CONFIG_SAVE, done="The node will save when it is next stationary")
+        self.ctx.command(enums.CMD_CONFIG_SAVE, done="The node will tidy its flash when the car is next stationary")
 
     def _apply_nmea(self) -> None:
         on = self.nmea_enabled.isChecked()

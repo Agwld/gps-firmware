@@ -30,6 +30,14 @@ extern "C" {
 #define SYS_EVT_GPS_FAULT   (1U << 5) /* no NAV-PVT stream from the receiver */
 #define SYS_EVT_IMU_FAULT   (1U << 6) /* IMU absent or reads failing */
 #define SYS_EVT_MAG_FAULT   (1U << 7) /* magnetometer bring-up failed */
+/* Flash store state, set by imu_task (the store's only user). All three
+ * fit the 16-bit GPS_Status.fault_bits alongside the bits above. */
+#define SYS_EVT_FLASH_UNSAVED (1U << 8)  /* a gate/cal change is not in flash
+                                         * yet (page was full); it is written
+                                         * when the car is next stationary */
+#define SYS_EVT_FLASH_ERROR   (1U << 9)  /* the last flash write failed */
+#define SYS_EVT_FLASH_TIDY    (1U << 10) /* a compaction is waiting for the
+                                         * car to be stationary */
 
 /* Task priorities (higher = more urgent, per FreeRTOSConfig.h's 8 levels) */
 #define APP_PRIO_IMU  6
@@ -88,6 +96,12 @@ extern QueueHandle_t g_lap_event_queue;
  * persists the gate table funnels through this one queue. The only queue
  * with two producers; FreeRTOS queues are multi-producer safe. */
 extern QueueHandle_t g_gate_cmd_queue;
+
+/** FDCAN RX ISR -> imu_task: GPS_Gate_Set frames (place a gate at a given
+ * ENU position, can_gps_gate_t). A queue of its own because the payload
+ * does not fit app_cmd_t. imu_task drains g_gate_cmd_queue first, so a
+ * clear sent just before a set is applied before it. */
+extern QueueHandle_t g_gate_set_queue;
 
 /** can_task -> imu_task: mag-cal start/stop (CAN_CMD_MAG_CAL_*).
  * imu_task, not sys_task, owns this because it's the only task with

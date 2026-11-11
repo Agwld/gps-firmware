@@ -37,6 +37,7 @@ def main() -> int:
     args, _ = parser.parse_known_args()
 
     app = QApplication(sys.argv)
+    app.setOrganizationName("SUFST")
     app.setApplicationName("GPS Desktop")
     icon = QIcon(str(Path(__file__).parent / "assets" / "icon.png"))
     app.setWindowIcon(icon)

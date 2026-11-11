@@ -12,6 +12,7 @@ from gps_desktop import theme
 from gps_desktop.gps import enums
 from gps_desktop.ui.context import AppContext
 from gps_desktop.ui.screens.base import Screen
+from gps_desktop.ui.screens.dashboard import race_time
 from gps_desktop.ui.widgets import Tile, button, label, screen_layout, section_label
 
 
@@ -48,11 +49,12 @@ class LapsScreen(Screen):
         row = QHBoxLayout()
         row.setSpacing(10)
         self.current = Tile(ctx, "Current lap", "Lap_Status.running_time_ms")
+        self.race = Tile(ctx, "Race time")
         self.sector = Tile(ctx, "Sector", "Lap_Status.sector")
         self.last = Tile(ctx, "Last lap")
         self.best = Tile(ctx, "Best lap")
         self.count = Tile(ctx, "Laps completed", "Lap_Status.lap")
-        for tile in (self.current, self.sector, self.last, self.best, self.count):
+        for tile in (self.current, self.race, self.sector, self.last, self.best, self.count):
             row.addWidget(tile)
         box.addLayout(row)
 
@@ -91,7 +93,7 @@ class LapsScreen(Screen):
             is_best = lap.time_ms is not None and lap.time_ms == data.best_lap_ms
             self.laps.setItem(row, 0, cell(str(lap.number)))
             if lap.time_ms is None:
-                self.laps.setItem(row, 1, cell("In progress", theme.TEXT_MUTED))
+                self.laps.setItem(row, 1, cell("In progress", theme.ACCENT, True))
                 self.laps.setItem(row, 2, cell(""))
             else:
                 self.laps.setItem(row, 1, cell(enums.lap_time(lap.time_ms), theme.OK if is_best else None, is_best))
@@ -137,6 +139,18 @@ class LapsScreen(Screen):
                              f"Lap {last.number}" if last else "")
         best = data.best_lap_ms
         self.best.show_value(enums.lap_time(best), theme.OK if best else theme.TEXT_FAINT)
+        race = data.race_ms()
+        self.race.show_value(race_time(race), None if race is not None else theme.TEXT_FAINT,
+                             "Since connecting" if data.missed_laps else "")
+
+        # The lap being driven counts up live in its row.
+        current = data.current_lap()
+        if current is not None and running and self.laps.rowCount() and self.laps.item(0, 0) is not None \
+                and self.laps.item(0, 0).text() == str(current.number):
+            item = self.laps.item(0, 1)
+            text = f"In progress · {enums.lap_time(data.value(cid))}"
+            if item is not None and item.text() != text:
+                item.setText(text)
 
         if not have:
             self.state.setText("No lap timer status yet")

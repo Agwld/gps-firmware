@@ -15,7 +15,9 @@ from pathlib import Path
 import cantools
 from cantools.database.errors import Error as CantoolsError
 
-COMMAND_MESSAGE = "GPS_Command"  # The one message sent to the node rather than by it
+COMMAND_MESSAGE = "GPS_Command"  # Commands to the node
+GATE_SET_MESSAGE = "GPS_Gate_Set"  # Places a gate at a position
+SENDER = "DASH"  # Messages this database lists as sent by the dash are ones this app sends
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,7 @@ class Database:
         self.signals: dict[str, Signal] = {}
         self._names: dict[int, str] = {}
         self.counter_size: dict[str, int] = {}  # Message name -> how many values its rolling counter has
+        self.outgoing: set[str] = set()  # Messages sent to the node, not by it
         for m in self._db.messages:
             comment = m.comment or ""
             signals = tuple(
@@ -86,7 +89,8 @@ class Database:
             )
             self._names[m.frame_id] = m.name
             self.counter_size.update({m.name: 1 << s.length for s in m.signals if s.name == "counter"})
-            if m.name == COMMAND_MESSAGE:
+            if SENDER in (m.senders or []):
+                self.outgoing.add(m.name)
                 continue
             self.messages.append(Message(m.name, m.frame_id, m.length, comment, _rate(comment), signals))
             self.signals.update({s.cid: s for s in signals})

@@ -242,8 +242,9 @@ slots, so rates from 100 Hz down to 1 Hz don't pile into the same slot). The
 dropped; if the loop overruns (nothing on the bus to acknowledge), the backlog
 is discarded rather than replayed. Bus-off is cleared once a second.
 
-Received frames: `GPS_Command` (dispatched to the owning task's queue) and the
-VCU's `Wheel_Speeds` (front-left wheel only).
+Received frames: `GPS_Command` (dispatched to the owning task's queue),
+`GPS_Gate_Set` (a gate at a given position, straight to imu_task's
+`g_gate_set_queue`) and the VCU's `Wheel_Speeds` (front-left wheel only).
 
 ## Health and fault handling
 

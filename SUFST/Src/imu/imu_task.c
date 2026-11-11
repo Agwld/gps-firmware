@@ -96,6 +96,7 @@ static bool s_frame_origin_set;
  * is re-saved afterwards. */
 static bool s_compact_pending;
 static bool s_resave_pending;
+static bool s_flash_error; /* the last flash write failed (not just full) */
 
 /* Latest GPS status, updated at fix rate by handle_gps_pvt() and published
  * every loop alongside the fused speed/course. The tick stamps drive the
@@ -143,6 +144,31 @@ note_save(status_t st)
     if (st == STATUS_FULL) {
         s_compact_pending = true;
         s_resave_pending = true;
+    } else {
+        s_flash_error = (st != STATUS_OK);
+    }
+}
+
+/* Publish the flash store's state in the event group, which GPS_Status
+ * carries, so a dash can show whether gate edits have reached flash. */
+static void
+publish_flash_state(void)
+{
+    uint32_t set = 0U;
+    if (s_resave_pending) {
+        set |= SYS_EVT_FLASH_UNSAVED;
+    }
+    if (s_flash_error) {
+        set |= SYS_EVT_FLASH_ERROR;
+    }
+    if (s_compact_pending) {
+        set |= SYS_EVT_FLASH_TIDY;
+    }
+    const uint32_t all =
+        SYS_EVT_FLASH_UNSAVED | SYS_EVT_FLASH_ERROR | SYS_EVT_FLASH_TIDY;
+    app_clear_events(all & ~set);
+    if (set != 0U) {
+        app_set_events(set);
     }
 }
 
@@ -361,6 +387,30 @@ apply_gate_commands(quat_t q)
         } else if (cmd.cmd == CAN_CMD_CONFIG_SAVE) {
             s_compact_pending = true;
         }
+    }
+
+    /* GPS_Gate_Set: a gate at a position chosen on a map, rather than
+     * wherever the car is. Same placement and persistence path as above,
+     * so it behaves exactly like a gate set from the car - including slot
+     * 0 clearing the sectors. */
+    can_gps_gate_t at;
+    while (xQueueReceive(g_gate_set_queue, &at, 0) == pdTRUE) {
+        if (!s_frame_origin_set) {
+            continue; /* the position is relative to an origin not yet set */
+        }
+        uint8_t slot = at.index;
+        if (slot == CAN_GATE_SLOT_NEXT_SECTOR) {
+            slot = next_sector_slot();
+        }
+        if (slot >= LAP_MAX_GATES) {
+            continue;
+        }
+        /* Broadcast as [0, 360); stored as an atan2 result in (-pi, pi]. */
+        float heading_deg = at.heading_deg;
+        if (heading_deg > 180.0f) {
+            heading_deg -= 360.0f;
+        }
+        place_gate(slot, at.east_m, at.north_m, heading_deg * DEG_TO_RAD);
     }
 }
 
@@ -943,6 +993,7 @@ imu_task_main(void *argument)
         handle_pitot(ve_mps, vn_mps, gps_aided, now);
 
         service_flash(fused_speed_mps);
+        publish_flash_state();
 
         prev_e = e_m;
         prev_n = n_m;

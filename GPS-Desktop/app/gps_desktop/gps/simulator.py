@@ -16,13 +16,14 @@ from collections import deque
 from collections.abc import Iterator
 
 from gps_desktop.gps import enums
-from gps_desktop.gps.dbc import COMMAND_MESSAGE, Database, Frame
+from gps_desktop.gps.dbc import COMMAND_MESSAGE, GATE_SET_MESSAGE, Database, Frame
 from gps_desktop.gps.sources import Source
 from gps_desktop.gps.store import from_enu
 
 TICK = 0.01  # The IMU messages go out at 100 Hz; everything else is a multiple of this.
 ORIGIN = (50.93570, -1.39660)
 TWO_PI = 2 * math.pi
+GATE_HALF_WIDTH_M = 2.0  # LAP_GATE_HALF_WIDTH_M in the firmware
 WIND_MPS, WIND_FROM_DEG = 3.0, 240.0
 
 
@@ -44,7 +45,9 @@ class Simulator(Source):
         self.elapsed = 0.0
         self.counters: dict[str, int] = {}
         self.pace = 1.0  # Changes a little every lap, so lap times differ
-        # Gate slot -> (angle round the circuit, east, north, heading)
+        # Gate slot -> (angle round the circuit, or None if off the track, east, north, heading).
+        # Heading is an ENU math angle in degrees, as the firmware sends it.
+        self.tidy_until = -1.0  # A CONFIG_SAVE shows as pending flash housekeeping until then
         self.gates: dict[int, tuple[float, float, float, float]] = {}
         for slot, angle in enumerate((0.5, 0.5 + TWO_PI / 3, 0.5 + 2 * TWO_PI / 3)):
             self._place_gate(slot, angle)
@@ -145,7 +148,9 @@ class Simulator(Source):
             send("GPS_Frame_Origin", {"origin_lat_deg": ORIGIN[0], "origin_lon_deg": ORIGIN[1]})
             send("GPS_Temp", {"mcp9800_temp_c": 31.5 + math.sin(self.elapsed / 40), "imu_temp_c": 36.2 + noise(0, 0.05),
                               "mcu_temp_c": 41.0})
-            send("GPS_Status", {"uptime_s": min(65535, int(self.elapsed)), "fault_bits": 0x06 | (0x19 if fix else 0),
+            tidy = enums.FLASH_TIDY if self.elapsed < self.tidy_until else 0
+            send("GPS_Status", {"uptime_s": min(65535, int(self.elapsed)),
+                                "fault_bits": 0x06 | (0x19 if fix else 0) | tidy,
                                 "gps_retry_count": 0, "imu_retry_count": 0,
                                 "cpu_load_pct": max(0, min(100, round(23 + noise(0, 1.5))))})
         return out
@@ -179,20 +184,43 @@ class Simulator(Source):
 
     def _place_gate(self, slot: int, angle: float) -> None:
         east, north = track_point(angle)
-        self.gates[slot] = (angle % TWO_PI, east, north, self._motion(angle)["course"])
+        self.gates[slot] = (angle % TWO_PI, east, north, enums.heading_from_bearing(self._motion(angle)["course"]))
+
+    def _set_gate(self, slot: int, place) -> None:
+        """Fill a slot the way the firmware does: start/finish clears the sectors and restarts timing."""
+        if slot == enums.SLOT_NEXT_SECTOR:
+            slot = next((s for s in range(1, enums.GATE_COUNT) if s not in self.gates), enums.GATE_COUNT - 1)
+        if not 0 <= slot < enums.GATE_COUNT:
+            return
+        if slot == 0:
+            self.gates.clear()
+            self._reset_timing()
+        place(slot)
+
+    def _place_gate_at(self, slot: int, east: float, north: float, heading: float) -> None:
+        """A gate at a given point. Like the firmware, it only times laps if it lies across the track,
+        facing the way the car drives."""
+        best = min((math.hypot(e - east, n - north), a)
+                   for a in (i * TWO_PI / 3600 for i in range(3600)) for e, n in [track_point(a)])
+        distance, angle = best
+        travel = math.radians(enums.heading_from_bearing(self._motion(angle)["course"]))
+        forward = math.cos(travel - math.radians(heading)) > 0
+        self.gates[slot] = (angle if distance <= GATE_HALF_WIDTH_M and forward else None, east, north, heading % 360)
 
     def _command(self, frame: Frame) -> None:
         decoded = self.db.decode(frame)
-        if decoded is None or decoded[0] != COMMAND_MESSAGE:
+        if decoded is None:
+            return
+        if decoded[0] == GATE_SET_MESSAGE:
+            v = decoded[1]
+            self._set_gate(int(v["set_index"]), lambda s: self._place_gate_at(
+                s, v["set_east_m"], v["set_north_m"], v["set_heading_deg"]))
+            return
+        if decoded[0] != COMMAND_MESSAGE:
             return
         command, slot = int(decoded[1]["cmd"]), int(decoded[1]["arg0"])
         if command == enums.CMD_GATE_SET:
-            if slot == enums.SLOT_NEXT_SECTOR:
-                slot = next((s for s in range(1, enums.GATE_COUNT) if s not in self.gates), -1)
-            if 0 <= slot < enums.GATE_COUNT:
-                self._place_gate(slot, self.angle)
-                if slot == 0:
-                    self._reset_timing()
+            self._set_gate(slot, lambda s: self._place_gate(s, self.angle))
         elif command == enums.CMD_GATE_CLEAR:
             for s in range(enums.GATE_COUNT) if slot == enums.SLOT_ALL else [slot]:
                 self.gates.pop(s, None)
@@ -200,6 +228,8 @@ class Simulator(Source):
                 self._reset_timing()
         elif command == enums.CMD_MAG_CAL_START:
             self.mag_cal_start = self.elapsed
+        elif command == enums.CMD_CONFIG_SAVE:
+            self.tidy_until = self.elapsed + 3.0
 
     def _reset_timing(self) -> None:
         self.laps = 0
@@ -214,6 +244,8 @@ class Simulator(Source):
                                                     "counter": self.counters["Lap_Event"]}, t))
 
         for slot, (gate_angle, *_rest) in sorted(self.gates.items()):
+            if gate_angle is None:
+                continue  # Not across the track, so never crossed
             before = (previous - gate_angle) % TWO_PI
             after = (self.angle - gate_angle) % TWO_PI
             if after >= before:

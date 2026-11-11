@@ -132,6 +132,13 @@ BO_ 1727 GPS_Command: 3 DASH
  SG_ arg0 : 8|8@1+ (1,0) [0|255] "" GPS_NODE
  SG_ arg1 : 16|8@1+ (1,0) [0|255] "" GPS_NODE
 
+BO_ 1728 GPS_Gate_Set: 8 DASH
+ SG_ set_index : 0|8@1+ (1,0) [0|255] "" GPS_NODE
+ SG_ set_flags : 8|8@1+ (1,0) [0|255] "" GPS_NODE
+ SG_ set_east_m : 16|16@1- (0.1,0) [-3276.8|3276.7] "m" GPS_NODE
+ SG_ set_north_m : 32|16@1- (0.1,0) [-3276.8|3276.7] "m" GPS_NODE
+ SG_ set_heading_deg : 48|16@1+ (0.1,0) [0|359.9] "deg" GPS_NODE
+
 CM_ BO_ 1712 "20 Hz fused position from the KF (lat/lon).";
 CM_ BO_ 1713 "20 Hz fused speed/course/altitude and fix quality summary.";
 CM_ SG_ 1713 fix_type "UBX-NAV-PVT fixType (2 = 2D, 3 = 3D, 4 = GNSS+DR), forced to 0 whenever the receiver's gnssFixOK flag is clear or no NAV-PVT has arrived for 1 s.";
@@ -150,7 +157,7 @@ CM_ BO_ 1718 "100 Hz calibrated body-frame accelerometer, +-16 g FS.";
 CM_ BO_ 1719 "100 Hz calibrated body-frame gyroscope. 0.0625 dps/LSB, range +-2048 dps, covering the LSM6DSO32's +-2000 dps FS with margin.";
 CM_ BO_ 1720 "1 Hz temperature summary: MCP9800 board ambient, IMU die temp, MCU internal temp (whole degrees). A sensor that fails to read keeps its last good value.";
 CM_ BO_ 1721 "1 Hz node health: uptime, fault bits, retry counters, CPU load.";
-CM_ SG_ 1721 fault_bits "The node's whole status event group (SYS_EVT_* in sys/app.h), not faults alone: bit0 GPS ready (valid fix), bit1 IMU ready, bit2 mag ready, bit3 time locked (PPS), bit4 ENU origin set, bit5 GPS fault (no NAV-PVT stream), bit6 IMU fault, bit7 mag fault.";
+CM_ SG_ 1721 fault_bits "The node's whole status event group (SYS_EVT_* in sys/app.h), not faults alone: bit0 GPS ready (valid fix), bit1 IMU ready, bit2 mag ready, bit3 time locked (PPS), bit4 ENU origin set, bit5 GPS fault (no NAV-PVT stream), bit6 IMU fault, bit7 mag fault, bit8 flash unsaved (a gate/cal change is not in flash yet; written when the car is next stationary), bit9 flash write failed, bit10 flash tidy-up waiting for the car to be stationary.";
 CM_ SG_ 1721 gps_retry_count "GPS link recoveries since boot (UART re-arms + receiver re-configurations), saturating at 255.";
 CM_ SG_ 1721 imu_retry_count "Failed IMU reads since boot, saturating at 255.";
 CM_ SG_ 1721 uptime_s "Seconds since boot, saturating at 65535 (~18.2 h).";
@@ -159,6 +166,7 @@ CM_ SG_ 1722 cal_status "Continuous background calibration state: 0 uncalibrated
 CM_ BO_ 1723 "1 Hz ENU frame origin (absolute lat/lon). The gates and the node's own ENU are relative to this; re-anchored at each power-up's first fix, so the dash must re-read it rather than assume it's fixed.";
 CM_ BO_ 1724 "Lap gate, one slot per frame round-robined (~5 Hz aggregate, whole set in ~1.6 s). Position is ENU metres relative to GPS_Frame_Origin. index 0 = start/finish, 1-7 = sectors; gate_flags bit0 = valid (0 => empty/cleared slot).";
 CM_ SG_ 1724 gate_index "Which gate slot this frame carries (plain data field, not a multiplexor).";
+CM_ SG_ 1724 gate_heading_deg "Direction of travel through the gate as an ENU math angle: degrees anticlockwise from EAST (atan2(north, east)), not a compass bearing. 0 = east, 90 = north.";
 CM_ SG_ 1724 gate_flags "bit0 = valid; a cleared slot is broadcast with valid=0 so the dash removes it.";
 CM_ BO_ 1725 "1 Hz GPS time reference for other nodes: iTOW (same time domain as Lap_Event TM2 marks) plus UTC wall clock. UTC date is not carried (the MoTeC gets it via NMEA RMC); note GPS time leads UTC by the leap-second count, so UTC h/m/s is not simply iTOW mod 1 day.";
 CM_ SG_ 1725 time_flags "bit0 = UTC time valid (NAV-PVT validTime), bit1 = fully resolved (no sub-second ambiguity).";
@@ -170,3 +178,7 @@ CM_ SG_ 1726 air_flags "CAN_GPS_AIR_FLAG_*: bit0 pitot frames arriving, bit1 tar
 CM_ SG_ 1726 counter "4-bit rolling counter.";
 CM_ BO_ 1727 "RX only: host/dash sends commands to the GPS node. byte0=cmd, byte1=arg0, byte2=arg1; see CAN_CMD_* in can_defs.h.";
 CM_ SG_ 1727 cmd "0x01 GATE_SET (arg0=slot 0-7, or 0xFE=next free sector slot), 0x02 GATE_CLEAR (arg0=slot,0xFF=all), 0x10 MAG_CAL_START (discard the mag cal and re-sweep), 0x11 MAG_CAL_STOP (no effect), 0x20 CONFIG_SAVE (compact the flash store when next stationary), 0x30 NMEA_CFG (arg0=rate Hz 1-20 or 0=keep, arg1=enable).";
+CM_ BO_ 1728 "RX only: place a lap gate at a given position rather than at the car. Same layout as GPS_Gate. Position is ENU metres relative to the node's CURRENT GPS_Frame_Origin; ignored until the node has an origin. Saved to flash and broadcast on GPS_Gate like a gate set from the car.";
+CM_ SG_ 1728 set_index "Slot: 0 = start/finish (clears the sector gates), 1-7 = sector, 0xFE = next free sector slot.";
+CM_ SG_ 1728 set_flags "Reserved, send 0.";
+CM_ SG_ 1728 set_heading_deg "Direction of travel through the gate, degrees anticlockwise from east, as GPS_Gate.";

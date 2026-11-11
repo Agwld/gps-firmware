@@ -49,9 +49,9 @@ class History:
 @dataclass
 class Gate:
     index: int
-    east: float  # Metres from the frame origin
+    east: float  # Metres from the node's frame origin
     north: float
-    heading: float  # Direction of travel through the gate, degrees from north
+    heading: float  # Direction of travel, degrees anticlockwise from east (as on the bus)
 
 
 @dataclass
@@ -116,6 +116,7 @@ class GpsData(QObject):
         self.events: list[Event] = []
         self.best_lap_ms: int | None = None
         self._last_event: tuple | None = None
+        self.missed_laps = False  # Laps completed before the app was listening
 
         self._t0 = time.monotonic()
         self._rate_counts: dict[str, int] = {}
@@ -276,7 +277,26 @@ class GpsData(QObject):
         self.events.clear()
         self.best_lap_ms = None
         self._last_event = None
+        self.missed_laps = False
         self.lapsChanged.emit()
+
+    def running(self) -> bool:
+        return bool(self.flags("Lap_Status.flags") & enums.LAP_RUNNING) and "Lap_Status.flags" in self.values
+
+    def race_ms(self) -> int | None:
+        """Time since the race started: every completed lap plus the one being driven.
+
+        Built from the node's own lap times, so it is as exact as they are. None before the
+        first crossing of the start/finish line.
+        """
+        done = [lap.time_ms for lap in self.laps if lap.time_ms is not None]
+        current = int(self.values.get("Lap_Status.running_time_ms", 0)) if self.running() else 0
+        if not done and not self.running():
+            return None
+        return sum(done) + current
+
+    def current_lap(self) -> Lap | None:
+        return next((lap for lap in reversed(self.laps) if lap.time_ms is None), None)
 
     def last_lap(self) -> Lap | None:
         return next((lap for lap in reversed(self.laps) if lap.time_ms is not None), None)
@@ -288,6 +308,33 @@ class GpsData(QObject):
         lap = Lap(number)
         self.laps.append(lap)
         return lap
+
+    def _on_lap_status(self, values: dict[str, float]) -> None:
+        """Keep a row for the lap being driven, from the moment it starts."""
+        running = bool(int(values["flags"]) & enums.LAP_RUNNING)
+        completed = int(values["lap"])
+        done = self.last_lap()
+        changed = False
+        if done is not None and completed + 1 < done.number:
+            # The node's lap count went back by more than a status frame can lag behind an
+            # event: the start/finish gate was moved or the node restarted.
+            self.laps.clear()
+            self.best_lap_ms = None
+            done = None
+            changed = True
+        if running:
+            number = completed + 1
+            if (done is None or number > done.number) and not any(lap.number == number for lap in self.laps):
+                if not self.laps and completed > 0:
+                    self.missed_laps = True
+                self.laps.append(Lap(number))
+                changed = True
+        else:
+            before = len(self.laps)
+            self.laps = [lap for lap in self.laps if lap.time_ms is not None]
+            changed |= len(self.laps) != before
+        if changed:
+            self.lapsChanged.emit()
 
     def _on_lap_event(self, values: dict[str, float]) -> None:
         kind, number, time_ms = int(values["type"]), int(values["lap"]), int(values["time_ms"])
@@ -320,4 +367,5 @@ class GpsData(QObject):
         "GPS_Frame_Origin": _on_origin,
         "GPS_Gate": _on_gate,
         "Lap_Event": _on_lap_event,
+        "Lap_Status": _on_lap_status,
     }

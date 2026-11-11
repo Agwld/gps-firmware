@@ -17,6 +17,16 @@ def compass(degrees: float) -> str:
     return COMPASS[round(degrees / 45) % 8]
 
 
+def race_time(ms: int | None) -> str:
+    """12:34.5 for a race time, with hours when it gets that long."""
+    if ms is None:
+        return "—"
+    hours, rest = divmod(int(ms) // 100, 36000)
+    minutes, tenths = divmod(rest, 600)
+    text = f"{minutes:02d}:{tenths / 10:04.1f}"
+    return f"{hours}:{text}" if hours else text
+
+
 def duration(seconds: float) -> str:
     hours, rest = divmod(int(seconds), 3600)
     return f"{hours}:{rest // 60:02d}:{rest % 60:02d}"
@@ -66,6 +76,7 @@ class DashboardScreen(Screen):
                          ("fusion", "Fusion", "GPS_Attitude.fusion_status", True),
                          ("magcal", "Magnetometer", "GPS_Mag.cal_status", True)])
         row("Lap timing", [("lap_now", "Current lap", "Lap_Status.running_time_ms", False),
+                           ("race", "Race time", None, False),
                            ("lap", "Laps completed", "Lap_Status.lap", False),
                            ("sector", "Sector", "Lap_Status.sector", False),
                            ("lap_last", "Last lap", None, False),
@@ -182,6 +193,10 @@ class DashboardScreen(Screen):
                    enums.lap_time(v("Lap_Status.running_time_ms")) if flags & enums.LAP_RUNNING else "—",
                    theme.WARN if flags & enums.LAP_DEGRADED else None, state)
         self._show("lap", "Lap_Status.lap", f"{int(v('Lap_Status.lap', 0))}")
+        race = data.race_ms()
+        self.tiles["race"].show_value(race_time(race), None if race is not None else theme.TEXT_FAINT,
+                                      "Since connecting" if data.missed_laps else
+                                      "Since the first start/finish crossing" if race is not None else "")
         self._show("sector", "Lap_Status.sector", f"{int(v('Lap_Status.sector', 0)) + 1}")
         last = data.last_lap()
         faint = theme.TEXT_FAINT

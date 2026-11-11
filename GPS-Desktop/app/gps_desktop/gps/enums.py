@@ -50,7 +50,17 @@ SYSTEM_BITS = [(0, "GPS ready", "The receiver has a valid fix"),
                (5, "GPS fault", "No position messages from the receiver"),
                (6, "IMU fault", ""),
                (7, "Mag fault", "")]
-SYSTEM_FAULT_MASK = 0xE0
+SYSTEM_FAULT_MASK = 0x2E0  # GPS, IMU and magnetometer faults, and a failed flash write
+
+# SUFST/Inc/sys/app.h: SYS_EVT_FLASH_* (also in GPS_Status.fault_bits)
+FLASH_UNSAVED = 1 << 8  # A gate or calibration change is not in flash yet
+FLASH_ERROR = 1 << 9  # The last flash write failed
+FLASH_TIDY = 1 << 10  # A compaction is waiting for the car to be stationary
+FLASH_BITS = [(8, "Flash unsaved", "A change is not in flash yet. It is written when the car is next stationary"),
+              (9, "Flash error", "The last flash write failed"),
+              (10, "Tidy pending", "Flash housekeeping is waiting for the car to be stationary")]
+SYSTEM_BITS = SYSTEM_BITS + FLASH_BITS
+SYSTEM_WARN_MASK = FLASH_UNSAVED | FLASH_TIDY
 
 # can_defs.h: CAN_GPS_TIME_FLAG_* (GPS_Time.time_flags)
 TIME_UTC_VALID = 0x01
@@ -80,6 +90,21 @@ SLOT_ALL = 0xFF
 
 def gate_name(index: int) -> str:
     return "Start/finish" if index == 0 else f"Sector {index}"
+
+
+def gate_label(index: int) -> str:
+    return "S/F" if index == 0 else f"S{index}"
+
+
+# Gate headings on the bus are ENU math angles: degrees anticlockwise from east, as the firmware
+# stores atan2(north, east). People think in compass bearings, so convert for display.
+def bearing(heading_deg: float) -> float:
+    """Compass bearing (clockwise from north) of an ENU math angle."""
+    return (90.0 - heading_deg) % 360.0
+
+
+def heading_from_bearing(bearing_deg: float) -> float:
+    return (90.0 - bearing_deg) % 360.0
 
 
 def lap_time(ms: float | None) -> str:
