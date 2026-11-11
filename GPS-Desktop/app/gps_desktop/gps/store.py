@@ -92,7 +92,7 @@ class GpsData(QObject):
     gatesChanged = Signal()
 
     HISTORY_SAMPLES = 6000  # A minute of the fastest (100 Hz) messages
-    TRAIL_SAMPLES = 24000  # Twenty minutes of 20 Hz positions
+    TRAIL_SAMPLES = 60000  # Twenty minutes of 50 Hz positions
 
     def __init__(self, db: Database, parent: QObject | None = None) -> None:
         super().__init__(parent)

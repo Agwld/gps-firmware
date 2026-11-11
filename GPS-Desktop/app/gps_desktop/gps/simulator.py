@@ -107,7 +107,7 @@ class Simulator(Source):
             status = 0x03 | (0x04 if self._mag_cal() >= 2 else 0) | (0x38 if fix else 0)
             send("GPS_Attitude", {"yaw_deg": (m["course"] + noise(0, 0.15)) % 360, "pitch_deg": -m["ax"] * 2.5,
                                   "roll_deg": m["ay"] * 3.0, "fusion_status": status})
-        if tick % 5 == 0:
+        if tick % 2 == 1:  # 50 Hz, on the slots the attitude frame does not use, as on the node
             lat, lon = from_enu(m["east"], m["north"], ORIGIN)
             send("GPS_Position", {"lat_deg": lat, "lon_deg": lon})
             send("GPS_Velocity", {"speed_mps": m["speed"], "course_deg": m["course"], "alt_m": 21.4 + noise(0, 0.05),

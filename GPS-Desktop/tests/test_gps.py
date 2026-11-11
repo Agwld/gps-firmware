@@ -45,7 +45,7 @@ class DatabaseTests(unittest.TestCase):
     def test_rates_come_from_the_comments(self):
         rates = {m.name: m.rate_hz for m in DB.messages}
         self.assertEqual(rates["GPS_IMU_Accel"], 100)
-        self.assertEqual(rates["GPS_Position"], 20)
+        self.assertEqual(rates["GPS_Position"], 50)
         self.assertIsNone(rates["Lap_Event"])  # Sent only when something happens
 
     def test_round_trip(self):
@@ -129,7 +129,7 @@ class StoreTests(unittest.TestCase):
         fill(data, run_simulator(Simulator(DB, seed=1), 5))
         self.assertIsNotNone(data.origin)
         east, north = data.trail_enu()
-        self.assertEqual(len(east), 100)  # 20 Hz for 5 s
+        self.assertEqual(len(east), 250)  # 50 Hz for 5 s
         self.assertLess(max(abs(east).max(), abs(north).max()), 200)
 
     def test_enu_round_trip(self):

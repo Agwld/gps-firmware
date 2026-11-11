@@ -139,8 +139,8 @@ BO_ 1728 GPS_Gate_Set: 8 DASH
  SG_ set_north_m : 32|16@1- (0.1,0) [-3276.8|3276.7] "m" GPS_NODE
  SG_ set_heading_deg : 48|16@1+ (0.1,0) [0|359.9] "deg" GPS_NODE
 
-CM_ BO_ 1712 "20 Hz fused position from the KF (lat/lon).";
-CM_ BO_ 1713 "20 Hz fused speed/course/altitude and fix quality summary.";
+CM_ BO_ 1712 "50 Hz fused position from the KF (lat/lon). The GNSS fixes are 20 Hz; between them the estimate is carried forward by the IMU.";
+CM_ BO_ 1713 "50 Hz fused speed/course/altitude and fix quality summary.";
 CM_ SG_ 1713 fix_type "UBX-NAV-PVT fixType (2 = 2D, 3 = 3D, 4 = GNSS+DR), forced to 0 whenever the receiver's gnssFixOK flag is clear or no NAV-PVT has arrived for 1 s.";
 CM_ BO_ 1714 "50 Hz Mahony AHRS Euler output (yaw/pitch/roll).";
 CM_ SG_ 1714 fusion_status "What the estimate is built from (CAN_FUSION_STATUS_* in can_defs.h): bit0 IMU samples flowing, bit1 magnetometer responding, bit2 mag calibrated (yaw is a usable heading), bit3 ENU origin set, bit4 GPS-aided (a valid fix within the last 1 s; clear = dead reckoning), bit5 time locked to GPS by PPS.";

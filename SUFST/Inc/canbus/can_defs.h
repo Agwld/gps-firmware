@@ -29,8 +29,8 @@ extern "C" {
 /* Message IDs (11-bit standard), base 0x6B0                          */
 /* ------------------------------------------------------------------ */
 
-#define CAN_ID_GPS_POSITION  0x6B0U /* 20 Hz */
-#define CAN_ID_GPS_VELOCITY  0x6B1U /* 20 Hz */
+#define CAN_ID_GPS_POSITION  0x6B0U /* 50 Hz */
+#define CAN_ID_GPS_VELOCITY  0x6B1U /* 50 Hz */
 #define CAN_ID_GPS_ATTITUDE  0x6B2U /* 50 Hz */
 #define CAN_ID_LAP_STATUS    0x6B3U /* 10 Hz */
 #define CAN_ID_LAP_EVENT     0x6B4U /* event */

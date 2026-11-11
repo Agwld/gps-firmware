@@ -211,7 +211,7 @@ arm-none-eabi-size -A build/Release/gps-firmware.elf
 
 ### CAN bandwidth
 
-About 335 frames/s transmitted (two 100 Hz IMU frames, 50 Hz attitude, 20 Hz position/velocity, the rest slower) — roughly 4 % of a 1 Mbit/s bus.
+About 395 frames/s transmitted (two 100 Hz IMU frames, 50 Hz attitude, 50 Hz position/velocity, the rest slower) — roughly 5 % of a 1 Mbit/s bus. Position and velocity went from 20 to 50 Hz: the fused filter state updates at the IMU rate, so the extra frames carry new estimates between the 20 Hz GNSS fixes.
 
 ## Common gotchas for future maintainers
 

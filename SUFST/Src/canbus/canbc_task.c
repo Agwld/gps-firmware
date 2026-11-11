@@ -83,8 +83,12 @@ enum {
 };
 
 static const canbc_rota_entry_t s_rota[ROTA_COUNT] = {
-    [ROTA_GPS_POSITION] = {CAN_ID_GPS_POSITION, CAN_DLC_GPS_POSITION, 5, 0},
-    [ROTA_GPS_VELOCITY] = {CAN_ID_GPS_VELOCITY, CAN_DLC_GPS_VELOCITY, 5, 1},
+    /* 50 Hz, on the odd slots so they never share a slot with the 50 Hz
+     * attitude frame (even slots). The fused state behind them updates at
+     * the IMU rate, so each frame carries a new estimate, not a repeat of
+     * the last 20 Hz fix. Busiest slot stays at 5 frames, as before. */
+    [ROTA_GPS_POSITION] = {CAN_ID_GPS_POSITION, CAN_DLC_GPS_POSITION, 2, 1},
+    [ROTA_GPS_VELOCITY] = {CAN_ID_GPS_VELOCITY, CAN_DLC_GPS_VELOCITY, 2, 1},
     [ROTA_GPS_ATTITUDE] = {CAN_ID_GPS_ATTITUDE, CAN_DLC_GPS_ATTITUDE, 2, 0},
     [ROTA_LAP_STATUS] = {CAN_ID_LAP_STATUS, CAN_DLC_LAP_STATUS, 10, 2},
     [ROTA_GPS_QUALITY] = {CAN_ID_GPS_QUALITY, CAN_DLC_GPS_QUALITY, 20, 4},

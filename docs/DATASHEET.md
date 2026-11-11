@@ -142,8 +142,8 @@ Little-endian, 11-bit IDs. Rates are from the broadcast rota in
 
 | ID | Name | Rate | DLC | Contents |
 |----|------|------|-----|----------|
-| 0x6B0 | GPS_Position | 20 Hz | 8 | Fused lat, lon (i32, 1e-7°) |
-| 0x6B1 | GPS_Velocity | 20 Hz | 8 | Speed (0.01 m/s), course (0.01°), altitude (0.1 m), fix type (4 bit), satellites (4 bit, saturates at 15), counter |
+| 0x6B0 | GPS_Position | 50 Hz | 8 | Fused lat, lon (i32, 1e-7°) |
+| 0x6B1 | GPS_Velocity | 50 Hz | 8 | Speed (0.01 m/s), course (0.01°), altitude (0.1 m), fix type (4 bit), satellites (4 bit, saturates at 15), counter |
 | 0x6B2 | GPS_Attitude | 50 Hz | 8 | Yaw (u16, 0.01°), pitch, roll (i16, 0.01°), fusion status, counter |
 | 0x6B3 | Lap_Status | 10 Hz | 8 | Lap count (u16), running time (u32 ms), sector (u8), flags |
 | 0x6B4 | Lap_Event | event | 8 | Type, lap (u16), time (u32 ms), counter |
